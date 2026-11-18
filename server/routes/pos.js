@@ -174,16 +174,27 @@ router.post('/shifts/open', requireAuth, requireRole('vendedor', 'jefe'), (req, 
   const config = getConfig(db);
   const { shift_template_id, register_number, seller_id, opening_cash_cup } = req.body || {};
 
+  if (req.user.role === 'vendedor' && config.permissions?.vendedor_open_shift === false) {
+    return res.status(403).json({
+      error: 'El creador configuró que la apertura de turnos la realice únicamente Dirección.',
+    });
+  }
+
   const targetSellerId =
     req.user.role === 'jefe' && seller_id ? Number(seller_id) : req.user.id;
-  const seller = db
-    .prepare(`SELECT * FROM users WHERE id = ? AND active = 1 AND role = 'vendedor'`)
-    .get(targetSellerId);
+  const seller = config.owner_can_operate_pos
+    ? db
+        .prepare(`SELECT * FROM users WHERE id = ? AND active = 1 AND role IN ('vendedor', 'jefe')`)
+        .get(targetSellerId)
+    : db
+        .prepare(`SELECT * FROM users WHERE id = ? AND active = 1 AND role = 'vendedor'`)
+        .get(targetSellerId);
 
   if (!seller) {
-    return res
-      .status(400)
-      .json({ error: 'Solo los trabajadores con cargo de Vendedor pueden abrir y custodiar una caja de turno.' });
+    return res.status(400).json({
+      error:
+        'Solo los Vendedores pueden abrir una caja (o active "El creador puede operar caja" en Mi Empresa y Modo).',
+    });
   }
 
   try {
@@ -192,8 +203,11 @@ router.post('/shifts/open', requireAuth, requireRole('vendedor', 'jefe'), (req, 
         .prepare(`SELECT * FROM shift_sessions WHERE status = 'ABIERTO' ORDER BY id DESC LIMIT 1`)
         .get();
 
+      const fallbackTpl = db
+        .prepare(`SELECT * FROM shift_templates WHERE active = 1 ORDER BY id ASC LIMIT 1`)
+        .get();
       if (!session) {
-        const tplId = Number(shift_template_id || seller.shift_template_id);
+        const tplId = Number(shift_template_id || seller.shift_template_id || fallbackTpl?.id || 0);
         const tpl = db.prepare(`SELECT * FROM shift_templates WHERE id = ? AND active = 1`).get(tplId);
         if (!tpl) throw new Error('Seleccione un turno de trabajo válido.');
 
@@ -241,11 +255,16 @@ router.post('/shifts/open', requireAuth, requireRole('vendedor', 'jefe'), (req, 
         );
       }
 
-      let regNum = [1, 2].includes(Number(register_number))
-        ? Number(register_number)
-        : seller.default_register || 1;
+      const maxSellers = Math.max(1, Math.min(6, Number(config.max_sellers_per_shift || 2)));
+      let regNum = Math.max(
+        1,
+        Math.min(maxSellers, Number(register_number) || seller.default_register || 1)
+      );
       if (existingRegs.some((r) => r.register_number === regNum)) {
-        regNum = regNum === 1 ? 2 : 1;
+        const free = Array.from({ length: maxSellers }, (_, i) => i + 1).find(
+          (n) => !existingRegs.some((r) => r.register_number === n)
+        );
+        regNum = free || 1;
       }
 
       const openCash = roundCup(

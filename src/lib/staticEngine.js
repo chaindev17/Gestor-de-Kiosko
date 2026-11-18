@@ -461,27 +461,65 @@ function buildInitialState(mode = 'demo') {
   return s;
 }
 
-function loadState() {
+let activeStorageKey = STORAGE_KEY;
+let extraPendingAffiliations = 0;
+
+export function setActiveStaticTenant(storageKey, pendingAffiliations = 0) {
+  activeStorageKey = storageKey || STORAGE_KEY;
+  extraPendingAffiliations = Number(pendingAffiliations || 0);
+}
+
+export function loadState(key = activeStorageKey) {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    const raw = window.localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.config && !parsed.config.modules) {
+        parsed.config.modules = {
+          pos: true, ipv: true, warehouse: true, pricing: true,
+          banking: true, onat: true, payroll: true, accounting: true, compliance: true,
+        };
+      }
+      if (parsed.config && !parsed.config.permissions) {
+        parsed.config.permissions = {
+          vendedor_request_restock: true, vendedor_view_pricelist: true, vendedor_open_shift: true,
+          almacenero_create_products: true, almacenero_view_pricelist: true, almacenero_view_compliance: true,
+          economico_edit_prices_directly: true, economico_approve_mermas: true, economico_manage_config: true,
+        };
+      }
+      if (parsed.config && !parsed.config.company_code) parsed.config.company_code = 'kiosko-CEIBA1';
+      return parsed;
+    }
   } catch {
     // ignore
   }
   const fresh = buildInitialState('demo');
-  saveState(fresh);
+  fresh.config.company_code = 'kiosko-CEIBA1';
+  fresh.config.management_preset = 'kiosko_completo';
+  fresh.config.business_type = 'Kiosko y Comercio Minorista';
+  fresh.config.join_mode = 'APPROVAL';
+  fresh.config.modules = {
+    pos: true, ipv: true, warehouse: true, pricing: true,
+    banking: true, onat: true, payroll: true, accounting: true, compliance: true,
+  };
+  fresh.config.permissions = {
+    vendedor_request_restock: true, vendedor_view_pricelist: true, vendedor_open_shift: true,
+    almacenero_create_products: true, almacenero_view_pricelist: true, almacenero_view_compliance: true,
+    economico_edit_prices_directly: true, economico_approve_mermas: true, economico_manage_config: true,
+  };
+  saveState(fresh, key);
   return fresh;
 }
 
-function saveState(s) {
+export function saveState(s, key = activeStorageKey) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    window.localStorage.setItem(key, JSON.stringify(s));
   } catch {
     // ignore
   }
 }
 
-function enrichUser(s, u) {
+export function enrichUser(s, u) {
   if (!u) return null;
   const st = s.shifts.find((x) => x.id === u.shift_template_id);
   const { pw: _pw, ...safe } = u;
@@ -786,7 +824,7 @@ function acctBal(s, code) {
   return r2(b);
 }
 
-function getBadges(s) {
+export function getBadges(s, overrideAffiliations) {
   const open = s.sessions.find((x) => x.status === 'ABIERTO');
   const st = open ? s.shifts.find((x) => x.id === open.shift_template_id) : null;
   const openRegs = open ? s.registers.filter((r) => r.shift_session_id === open.id && r.status === 'ABIERTA').length : 0;
@@ -797,6 +835,7 @@ function getBadges(s) {
     pending_deposits: s.deposits.filter((d) => d.status === 'PENDIENTE').length,
     unreconciled_qr: s.sales.filter((x) => !x.reconciled && (x.transfermovil_amount_cup > 0 || x.enzona_amount_cup > 0)).length,
     unvalidated_shifts: s.sessions.filter((x) => x.status === 'CERRADO').length,
+    pending_affiliations: overrideAffiliations !== undefined ? Number(overrideAffiliations) : extraPendingAffiliations,
     active_shift: open ? { ...open, shift_name: st?.name || 'Turno', open_registers: openRegs } : null,
     compliance_score: comp.score,
     compliance_overall: comp.overall,
@@ -912,12 +951,14 @@ export function handleStaticApi(method, rawPath, body = {}) {
     };
   }
   if (p === '/api/config/staff' && method === 'POST') {
-    const ci = String(body.ci || '').replace(/\D/g, '');
-    if (ci.length !== 11) err400('El Carné de Identidad debe tener 11 dígitos.');
+    const ci = s.config.require_cuban_ci === 0 ? String(body.ci || '').trim() : String(body.ci || '').replace(/\D/g, '');
+    if (s.config.require_cuban_ci !== 0 && ci.length !== 11) err400('El Carné de Identidad debe tener 11 dígitos.');
+    if (s.config.require_cuban_ci === 0 && ci.length < 4) err400('Indique un documento válido.');
     if (Number(body.base_salary_cup) < s.config.min_wage_cup) err400(`Ley 116: El salario no puede ser inferior a ${s.config.min_wage_cup} CUP.`);
     if (body.role === 'vendedor') {
+      const maxS = Math.max(1, Number(s.config.max_sellers_per_shift || 2));
       const inShift = s.users.filter((u) => u.active && u.role === 'vendedor' && u.shift_template_id === Number(body.shift_template_id));
-      if (inShift.length >= 2) err400('Ese turno ya cuenta con sus 2 vendedores activos (Caja 1 y Caja 2).');
+      if (inShift.length >= maxS) err400(`Ese turno ya cuenta con sus ${maxS} vendedor(es) activos.`);
     }
     const id = s.seq.user++;
     s.users.push({
@@ -983,6 +1024,7 @@ export function handleStaticApi(method, rawPath, body = {}) {
       onat: calcOnat(s, per),
       compliance: calcCompliance(s),
       pending_approvals: {
+        affiliations_count: extraPendingAffiliations,
         mermas: s.movements.filter((m) => m.status === 'PENDIENTE_APROBACION').map((m) => {
           const pr = s.products.find((z) => z.id === m.product_id);
           return { ...m, product_name: pr?.name, unit: pr?.unit };
@@ -1174,10 +1216,14 @@ export function handleStaticApi(method, rawPath, body = {}) {
       s.sessions.push(open);
       s.products.forEach((pr) => s.ipvs.push({ id: s.seq.ipv++, shift_session_id: id, product_id: pr.id, opening_qty: pr.kiosk_stock, entries_qty: 0, losses_qty: 0, sold_qty: 0, closing_qty: pr.kiosk_stock, sale_price_cup: pr.sale_price_cup, sold_amount_cup: 0 }));
     }
+    const maxS = Math.max(1, Number(s.config.max_sellers_per_shift || 2));
     const regs = s.registers.filter((r) => r.shift_session_id === open.id);
-    if (regs.length >= 2) err400('Máximo 2 vendedores simultáneos por turno (Caja 1 y Caja 2).');
+    if (regs.length >= maxS) err400(`Máximo ${maxS} caja(s) simultáneas por turno.`);
     const sellerId = user.role === 'jefe' && body.seller_id ? Number(body.seller_id) : user.id;
-    const regNum = regs.some((r) => r.register_number === Number(body.register_number)) ? (Number(body.register_number) === 1 ? 2 : 1) : Number(body.register_number || 1);
+    let regNum = Math.max(1, Math.min(maxS, Number(body.register_number || 1)));
+    if (regs.some((r) => r.register_number === regNum)) {
+      regNum = Array.from({ length: maxS }, (_, i) => i + 1).find((n) => !regs.some((r) => r.register_number === n)) || 1;
+    }
     const oc = r2(body.opening_cash_cup ?? s.config.petty_cash_fund_cup);
     s.registers.push({ id: s.seq.reg++, shift_session_id: open.id, register_number: regNum, seller_id: sellerId, status: 'ABIERTA', opening_cash_cup: oc, expected_cash_cup: oc, counted_cash_cup: null, cash_difference_cup: 0, total_sales_cup: 0, cash_sales_cup: 0, transfermovil_sales_cup: 0, enzona_sales_cup: 0, sales_count: 0, opened_at: nowIso() });
     return finish(sessionBundle(s, open.id));

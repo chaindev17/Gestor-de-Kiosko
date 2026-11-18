@@ -8,7 +8,9 @@ import {
   RefreshCw,
   Scale,
   ShoppingBag,
+  Sliders,
   TrendingUp,
+  UserPlus,
   Zap,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
@@ -96,28 +98,84 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
     pending_approvals.restocks.length +
     pending_approvals.unvalidated_shifts.length;
 
+  const activeModsCount = Object.values(data.config.modules || {}).filter(Boolean).length;
+  const maxCajas = Number(data.config.max_sellers_per_shift || 2);
+  const pendingAffs = Number(pending_approvals.affiliations_count || 0);
+
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      {/* Editorial Page Header */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-[#171C22]">Centro de Control del Negocio</h1>
-          <p className="text-xs text-[#66707D] mt-0.5">
-            {data.config.business_name} · {data.config.legal_form === 'MIPYME' ? 'Micro-MIPYME (DL 88/2024)' : 'TCP (DL 90/2024)'} · Jornada{' '}
-            {formatDate(data.today)}
+          <p className="kicker">
+            {data.config.business_type || 'Comercio'} · Jornada {formatDate(data.today)}
+          </p>
+          <h1 className="mt-1 font-editorial text-3xl sm:text-4xl text-[#181715]">
+            {data.config.business_name}
+          </h1>
+          <p className="text-xs text-[#6E685F] mt-1">
+            {data.config.legal_form === 'MIPYME' ? 'Micro-MIPYME (DL 88/2024)' : 'TCP (DL 90/2024)'}
+            {data.config.company_code ? (
+              <>
+                {' '}
+                · Código de afiliación:{' '}
+                <strong className="font-mono text-[#181715]">{data.config.company_code}</strong>
+              </>
+            ) : null}{' '}
+            · {activeModsCount} módulos activos
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={load} className="btn-secondary rounded-full text-xs">
             <RefreshCw className="h-3.5 w-3.5" />
             Actualizar
           </button>
-          <button type="button" onClick={() => onNavigate('compliance')} className="btn-primary text-xs">
-            <Scale className="h-3.5 w-3.5" />
-            Carpeta de Inspección
+          <button
+            type="button"
+            onClick={() => onNavigate('workspace-settings')}
+            className="btn-primary rounded-full text-xs"
+          >
+            <Sliders className="h-3.5 w-3.5" />
+            Configurar empresa y afiliados
           </button>
+          {data.config.modules?.compliance !== false && (
+            <button
+              type="button"
+              onClick={() => onNavigate('compliance')}
+              className="btn-secondary rounded-full text-xs"
+            >
+              <Scale className="h-3.5 w-3.5" />
+              Inspección
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Pending email affiliation alert banner */}
+      {pendingAffs > 0 && (
+        <div className="rounded-2xl border border-[#C2542D]/35 bg-[#FBEEE8] px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="rounded-full bg-[#C2542D] p-2 text-white">
+              <UserPlus className="h-4 w-4" />
+            </span>
+            <div>
+              <p className="text-sm font-bold text-[#181715]">
+                Tienes {pendingAffs} solicitud(es) de afiliación por correo esperando tu aprobación
+              </p>
+              <p className="text-xs text-[#6E493B]">
+                Revisa quién ingresó tu código <span className="font-mono">{data.config.company_code}</span> y asígnale su puesto y turno.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('workspace-settings')}
+            className="btn-primary rounded-full text-xs"
+          >
+            Revisar y aprobar →
+          </button>
+        </div>
+      )}
 
       {/* Top 4 KPIs */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -156,8 +214,8 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
         <section className="card p-5 lg:col-span-7 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="text-sm font-bold text-[#171C22]">
-                Monitor de Turno en Vivo (2 Vendedores por Turno)
+              <h2 className="text-sm font-bold text-[#181715]">
+                Monitor de Turno en Vivo ({maxCajas} {maxCajas === 1 ? 'Caja' : 'Cajas'} por Turno)
               </h2>
               <p className="text-xs text-[#66707D]">
                 {active_shift

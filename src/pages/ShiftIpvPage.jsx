@@ -48,7 +48,12 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
       }
       if (user.role === 'jefe') {
         const st = await api.get('/api/config/staff');
-        setSellers((st.staff || []).filter((u) => u.active && u.role === 'vendedor'));
+        const allowOwner = Boolean(st.config?.owner_can_operate_pos);
+        setSellers(
+          (st.staff || []).filter(
+            (u) => u.active && (u.role === 'vendedor' || (allowOwner && u.role === 'jefe'))
+          )
+        );
       }
     } catch (err) {
       notify(err.message, 'error');

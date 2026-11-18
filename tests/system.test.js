@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createApiApp } from '../server/index.js';
 import { closeDb } from '../server/db.js';
+import { closePlatform } from '../server/platform.js';
 
 let server;
 let baseUrl;
@@ -39,6 +40,7 @@ before(async () => {
 
 after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
+  closePlatform();
   closeDb();
 });
 
@@ -227,3 +229,201 @@ test('7. Económico concilia QR, paga nómina Ley 116, liquida ONAT y la contabi
   assert.equal(acct.status, 200);
   assert.equal(acct.data.trial_totals.is_balanced, true, 'NCIF Trial balance must be strictly balanced');
 });
+
+test('8. Registro por correo, creación de empresa aislada y configuración de manejo por el creador', async () => {
+  // 1. Register creator by email
+  const reg = await req('POST', '/api/platform/register', {
+    body: {
+      full_name: 'Camila Rodríguez',
+      email: 'Camila@LaUnion.com',
+      password: 'miClaveSegura26',
+      phone: '+598 99 123 456',
+    },
+  });
+  assert.equal(reg.status, 201);
+  assert.equal(reg.data.account.email, 'camila@launion.com');
+  const creatorAccToken = reg.data.token;
+
+  // 2. Creator sets up their company in "solo_dueno" (Mostrador Ágil) mode with custom modules
+  const comp = await req('POST', '/api/platform/companies', {
+    token: creatorAccToken,
+    body: {
+      business_name: 'Kiosko La Unión',
+      business_type: 'Kiosko y Comercio Minorista',
+      legal_form: 'MIPYME',
+      municipality: 'Pocitos',
+      province: 'Montevideo',
+      management_preset: 'solo_dueno',
+      shift_mode: 'double',
+      max_sellers_per_shift: 3,
+      seed_catalog: 'starter',
+      modules: {
+        pos: true,
+        ipv: true,
+        warehouse: true,
+        pricing: true,
+        banking: true,
+        onat: false,
+        payroll: false,
+        accounting: false,
+        compliance: false,
+      },
+    },
+  });
+  assert.equal(comp.status, 201);
+  assert.match(comp.data.active_company.company_code, /^kiosko-[A-Z0-9]{6}$/);
+  assert.equal(comp.data.config.business_name, 'Kiosko La Unión');
+  assert.equal(comp.data.config.modules.onat, false);
+  assert.equal(comp.data.config.owner_can_operate_pos, 1);
+  assert.equal(comp.data.config.max_sellers_per_shift, 3);
+
+  const ownerToken = comp.data.token;
+  const companyCode = comp.data.active_company.company_code;
+
+  // 3. Verify complete data isolation: Kiosko La Unión has 0 sales initially, and owner can open POS & sell
+  const ov = await req('GET', '/api/config/overview', { token: ownerToken });
+  assert.equal(ov.status, 200);
+  assert.equal(ov.data.today_sales.tickets, 0);
+
+  const openShift = await req('POST', '/api/pos/shifts/open', {
+    token: ownerToken,
+    body: { register_number: 1 },
+  });
+  assert.equal(openShift.status, 201);
+
+  const prods = await req('GET', '/api/warehouse/products', { token: ownerToken });
+  const sale = await req('POST', '/api/pos/sales', {
+    token: ownerToken,
+    body: {
+      items: [{ product_id: prods.data.products[0].id, quantity: 1 }],
+      payment_method: 'EFECTIVO',
+      cash_tendered_cup: 1000,
+    },
+  });
+  assert.equal(sale.status, 201);
+
+  // 4. Creator updates how the software works live (enables ONAT & restricts economist price edits)
+  const gov = await req('PUT', '/api/platform/company/governance', {
+    token: ownerToken,
+    body: {
+      modules: { ...comp.data.config.modules, onat: true, accounting: true },
+      permissions: { economico_edit_prices_directly: false },
+    },
+  });
+  assert.equal(gov.status, 200);
+  assert.equal(gov.data.config.modules.onat, true);
+  assert.equal(gov.data.config.permissions.economico_edit_prices_directly, false);
+
+  // Store for test 9
+  tokens.unionOwner = ownerToken;
+  tokens.unionCode = companyCode;
+});
+
+test('9. Afiliación por correo con código kiosko-XXXXXX, aprobación del creador, invitación directa y recuperación', async () => {
+  // 1. Public lookup verifies company code
+  const look = await req('GET', `/api/platform/lookup-code?code=${encodeURIComponent(tokens.unionCode)}`);
+  assert.equal(look.status, 200);
+  assert.equal(look.data.company.name, 'Kiosko La Unión');
+
+  // 2. Employee registers by email & requests affiliation with company code
+  const aff = await req('POST', '/api/platform/affiliate', {
+    body: {
+      code: tokens.unionCode,
+      requested_role: 'vendedor',
+      full_name: 'Lucía Fernández',
+      email: 'lucia@correo.com',
+      password: 'claveLucia99',
+      ci: '49182736',
+      note: 'Turno mañana',
+    },
+  });
+  assert.equal(aff.status, 201);
+  assert.equal(aff.data.status, 'PENDIENTE');
+
+  // 3. Creator sees pending affiliation badge & approves assigning Vendedor Caja 2
+  const list = await req('GET', '/api/platform/company/affiliations', { token: tokens.unionOwner });
+  assert.equal(list.status, 200);
+  assert.equal(list.data.pending.length, 1);
+  assert.equal(list.data.pending[0].email, 'lucia@correo.com');
+
+  const approve = await req(
+    'POST',
+    `/api/platform/company/affiliations/${list.data.pending[0].id}/decide`,
+    {
+      token: tokens.unionOwner,
+      body: {
+        decision: 'APROBAR',
+        role: 'vendedor',
+        shift_template_id: list.data.shifts[0].id,
+        default_register: 2,
+        base_salary_cup: 7500,
+        sales_commission_pct: 1.5,
+      },
+    }
+  );
+  assert.equal(approve.status, 200);
+
+  // 4. Lucía logs in with her email & lands directly inside Kiosko La Unión as Vendedor Caja 2
+  const luciaLogin = await req('POST', '/api/platform/login', {
+    body: { email: 'lucia@correo.com', password: 'claveLucia99' },
+  });
+  assert.equal(luciaLogin.status, 200);
+  assert.equal(luciaLogin.data.active_company.name, 'Kiosko La Unión');
+  assert.equal(luciaLogin.data.user.role, 'vendedor');
+  assert.equal(luciaLogin.data.user.default_register, 2);
+
+  // 5. Creator creates direct email invite for Economist & verifies creator's price-edit restriction applies
+  const inv = await req('POST', '/api/platform/company/invites', {
+    token: tokens.unionOwner,
+    body: {
+      role: 'economico',
+      target_email: 'martin@correo.com',
+      base_salary_cup: 10500,
+      label: 'Contador titular',
+    },
+  });
+  assert.equal(inv.status, 201);
+
+  const directJoin = await req('POST', '/api/platform/affiliate', {
+    body: {
+      code: inv.data.invite.code,
+      full_name: 'Martín Gómez',
+      email: 'martin@correo.com',
+      password: 'claveMartin88',
+    },
+  });
+  assert.equal(directJoin.status, 201);
+  assert.equal(directJoin.data.joined, true);
+  assert.equal(directJoin.data.user.role, 'economico');
+
+  // Economist price change blocked because creator disabled economico_edit_prices_directly
+  const prods = await req('GET', '/api/warehouse/products', { token: directJoin.data.token });
+  const restrictedPrice = await req(
+    'POST',
+    `/api/finance/products/${prods.data.products[0].id}/price`,
+    {
+      token: directJoin.data.token,
+      body: { sale_price_cup: 660 },
+    }
+  );
+  assert.equal(restrictedPrice.status, 403);
+
+  // 6. Password recovery by email
+  const forgot = await req('POST', '/api/platform/forgot-password', {
+    body: { email: 'lucia@correo.com' },
+  });
+  assert.equal(forgot.status, 200);
+  const reset = await req('POST', '/api/platform/reset-password', {
+    body: {
+      email: 'lucia@correo.com',
+      code: forgot.data.verification_code_preview,
+      new_password: 'nuevaClave2026',
+    },
+  });
+  assert.equal(reset.status, 200);
+  const relogin = await req('POST', '/api/platform/login', {
+    body: { email: 'lucia@correo.com', password: 'nuevaClave2026' },
+  });
+  assert.equal(relogin.status, 200);
+});
+

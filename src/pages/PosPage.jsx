@@ -260,14 +260,24 @@ export default function PosPage({ user, onNavigate, onRefreshBadges, notify }) {
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            <span>Sin caja abierta para su usuario en el turno actual.</span>
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[#E5DED0] bg-[#F3EFE7] px-3.5 py-2 text-xs text-[#3F3C37]">
+            <span>Sin caja abierta en este momento.</span>
             <button
               type="button"
-              onClick={() => onNavigate('shift-ipv')}
-              className="btn-primary text-[11px] py-1 px-2.5"
+              onClick={async () => {
+                try {
+                  await api.post('/api/pos/shifts/open', { register_number: user.default_register || 1 });
+                  notify('Turno y caja abiertos. Ya puedes registrar ventas.');
+                  await load();
+                  onRefreshBadges?.();
+                } catch (err) {
+                  notify(err.message, 'error');
+                  onNavigate('shift-ipv');
+                }
+              }}
+              className="btn-primary rounded-full text-[11px] py-1.5 px-3"
             >
-              Ir a Turno / Abrir Caja
+              Abrir caja ahora
             </button>
           </div>
         )}

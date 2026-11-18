@@ -39,10 +39,10 @@ async function detectBackendMode() {
 
 async function runStatic(method, path, body) {
   if (!staticModulePromise) {
-    staticModulePromise = import('./staticEngine.js');
+    staticModulePromise = import('./staticPlatform.js');
   }
-  const { handleStaticApi } = await staticModulePromise;
-  return handleStaticApi(method, path, body);
+  const { handleStaticPlatformApi } = await staticModulePromise;
+  return handleStaticPlatformApi(method, path, body);
 }
 
 export async function apiRequest(path, options = {}) {

@@ -3,6 +3,6 @@ dist/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/companies/
 .env
 *.log
-.DS_Store

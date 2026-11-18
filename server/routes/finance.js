@@ -63,6 +63,11 @@ router.get('/cost-sheets', requireAuth, (_req, res) => {
 router.post('/products/:id/price', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
   const db = getDb();
   const config = getConfig(db);
+  if (req.user.role === 'economico' && config.permissions?.economico_edit_prices_directly === false) {
+    return res.status(403).json({
+      error: 'El creador de la empresa configuró que solo Dirección apruebe cambios de precios.',
+    });
+  }
   const id = Number(req.params.id);
   const product = db.prepare(`SELECT * FROM products WHERE id = ? AND active = 1`).get(id);
   if (!product) return res.status(404).json({ error: 'Producto no encontrado.' });
