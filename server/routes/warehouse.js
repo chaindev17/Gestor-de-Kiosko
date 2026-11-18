@@ -62,6 +62,11 @@ router.get('/products', requireAuth, (_req, res) => {
 router.post('/products', requireAuth, requireRole('almacenero', 'economico', 'jefe'), (req, res) => {
   const db = getDb();
   const config = getConfig(db);
+  if (req.user.role === 'almacenero' && config.permissions?.almacenero_create_products === false) {
+    return res.status(403).json({
+      error: 'El creador de la empresa restringió la creación de productos nuevos a Dirección o Economía.',
+    });
+  }
   const b = req.body || {};
 
   if (!b.name?.trim() || !b.unit?.trim() || !b.category?.trim()) {
@@ -558,6 +563,12 @@ router.get('/restock-requests', requireAuth, (_req, res) => {
 
 router.post('/restock-requests', requireAuth, requireRole('vendedor', 'almacenero', 'jefe'), (req, res) => {
   const db = getDb();
+  const cfg = getConfig(db);
+  if (req.user.role === 'vendedor' && cfg.permissions?.vendedor_request_restock === false) {
+    return res
+      .status(403)
+      .json({ error: 'El creador de la empresa desactivó las solicitudes manuales de reabastecimiento para vendedores.' });
+  }
   const { product_id, quantity, notes } = req.body || {};
   const product = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(Number(product_id));
   if (!product) return res.status(404).json({ error: 'Producto no encontrado.' });
@@ -736,6 +747,11 @@ router.post('/mermas', requireAuth, requireRole('almacenero', 'vendedor', 'jefe'
 router.post('/mermas/:id/decide', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
   const db = getDb();
   const config = getConfig(db);
+  if (req.user.role === 'economico' && config.permissions?.economico_approve_mermas === false) {
+    return res
+      .status(403)
+      .json({ error: 'Solo el creador/jefe de la empresa está autorizado para aprobar actas de merma en este negocio.' });
+  }
   const id = Number(req.params.id);
   const decision = req.body?.decision === 'RECHAZAR' ? 'RECHAZADO' : 'APLICADO';
 

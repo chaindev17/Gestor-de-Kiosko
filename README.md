@@ -1,43 +1,38 @@
-# Gestor de Kiosko — Sistema Integral Automatizado (Legislación Económica Cubana)
+# Gestor de Kiosko — Plataforma Multi-Empresa & Gestión Integral
 
-Aplicación web *full-stack* para la gestión automatizada de ventas, abastecimiento de almacén, personal por turnos y control económico-financiero de un kiosko o pequeño negocio en Cuba.
+Plataforma web integral de gestión automatizada para kioskos y comercios minoristas — con experiencia editorial inspirada en **Conecta** (`conecta.simplemente.com.uy`), **registro por correo electrónico**, **creación de empresas aisladas**, **afiliación por código (`kiosko-XXXXXX`)** y **control total del creador sobre cómo se maneja el software**.
 
-## Estructura de Puestos Soportada (Segregación de Funciones — Res. 60/22)
+## Novedades principales
 
-1. **Jefe del Negocio (`jefe`)**: Centro de control ejecutivo en tiempo real, monitor simultáneo de los 2 vendedores en turno, gestión de plantilla y turnos, aprobaciones en un clic (mermas, reabastecimientos, auditorías), configuración fiscal, bitácora de auditoría y expediente listo para inspecciones (ONAT, DIS, BCC, MTSS).
-2. **Económico (`economico`)**: Bancarización y tesorería, conciliación automática de Transfermóvil y EnZona, órdenes de depósito en Cuenta Bancaria Fiscal, Fichas de Costo y Precios (MFP), liquidación de tributos ONAT por párrafos, nómina automatizada, gastos deducibles y contabilidad de partida doble (NCIF).
-3. **Almacenero (`almacenero`)**: Custodia del Almacén Central, Informe de Recepción de proveedores (**SC-2-04**), despacho automático en 1 clic al mostrador del kiosko (**SC-2-09**), Submayor y Tarjeta de Estiba (**SC-2-14**) con rotación **FEFO** por vencimiento, y reporte de mermas (**SC-2-16**).
-4. **2 Vendedores por Turno (`vendedor1` / `vendedor2` — Mañana; `vendedor3` / `vendedor4` — Tarde)**: Punto de Venta ágil en **CUP** con doble caja independiente (Caja 1 y Caja 2, máximo estricto de 2 vendedores activos por turno), cobro en Efectivo (con cálculo de vuelto), **Transfermóvil QR**, **EnZona QR** y pago mixto, **IPV (Informe de Producto a la Venta)** en vivo, pedidos a almacén y arqueo de cierre por denominación de billetes CUP (`1000` a `1` CUP).
+- **Cuentas con correo electrónico**: registro, inicio de sesión, recuperación de contraseña y panel multi-empresa (*Tus Empresas*), permitiendo a una misma persona ser creadora de su negocio y/o afiliada a otros comercios.
+- **Crear tu propia empresa en 3 pasos**: cada empresa recibe su propia base de datos aislada y un código único (`kiosko-XXXXXX`) con tarjeta QR imprimible, enlace directo (`?codigo=kiosko-XXXXXX`) y botón para compartir por WhatsApp.
+- **Afiliarse a una empresa existente**: los trabajadores ingresan el código `kiosko-XXXXXX`, verifican el comercio en vivo y solicitan afiliación (para que el creador apruebe y asigne puesto, turno, caja y salario) o ingresan al instante con un código de invitación directa por rol/correo.
+- **El creador decide cómo se maneja el software** (en el asistente inicial y en cualquier momento desde *Mi Empresa y Modo*):
+  - **4 modos de gestión**: *Mostrador Ágil (Dueño en Caja)*, *Equipo Compacto*, *Kiosko Integral (2 Cajas por Turno)* y *A tu Medida*.
+  - **Módulos activables/desactivables**: Punto de Venta (POS), Turnos e IPV, Almacén y Mermas, Precios y Fichas MFP, Bancarización y QR, Tributos ONAT, Nómina Ley 116, Contabilidad NCIF y Carpeta de Inspección.
+  - **Estructura y reglas a medida**: de 1 a 6 cajas simultáneas por turno, turno único/doble/24h, dueño operando POS, cupos de puestos estrictos o flexibles, carné de identidad obligatorio u opcional, y automatizaciones/topes legales activables.
+  - **Permisos granulares por rol**: decide exactamente qué pueden hacer vendedores, almaceneros y económicos.
+- **Automatización comercial, tributaria y contable completa**: POS en CUP con cobro en efectivo, Transfermóvil, EnZona y Mixto; IPV en vivo; modelos SC-2-04, SC-2-09, SC-2-14 y SC-2-16; fichas de costo Res. 225/2024 MFP y tablilla Decreto 30/2021; Bancarización Res. 111/2023 BCC; tributos ONAT Ley 113 (MIPYME DL 88/2024 y TCP DL 90/2024); Nómina Ley 116; y contabilidad NCIF de partida doble automática.
+- **Doble modo de ejecución**: servidor full-stack (`Express` + `node:sqlite`) o modo estático 100 % funcional en **GitHub Pages** con persistencia multi-empresa en el navegador.
 
-## Marco Legal Económico Cubano Integrado
+## Demo interactiva incluida
 
-- **Formas de Gestión (DL 88/2024 MIPYMES y DL 90/2024 TCP)**: Preconfigurado como **Micro-MIPYME** (1 a 10 personas, exigido cuando la plantilla supera los 3 trabajadores contratados del TCP), con opción de alternar a **TCP Régimen General** y alerta/bloqueo legal automático.
-- **Bancarización (Resolución 111/2023 del BCC)**: Moneda oficial CUP, pasarelas QR Transfermóvil y EnZona con bonificación configurable y conciliación bancaria, bloqueo automático de pagos en efectivo superiores a **5,000 CUP** a proveedores, y generación automática de órdenes de depósito bancario para el siguiente día hábil al cerrar cada turno.
-- **Control de Precios y Fichas de Costo (Resolución 225/2024 MFP y Decreto 30/2021)**: Topes minoristas oficiales para los 6 productos básicos regulados (pollo troceado, aceite vegetal, leche en polvo, pastas alimenticias, salchichas y detergente en polvo), control automático del **margen comercial máximo del 30%** sobre costos y gastos reconocidos, y **Tablilla Oficial de Precios en CUP** lista para imprimir y exhibir en mostrador.
-- **Sistema Tributario ONAT (Ley 113)**: Cálculo automático de Impuesto sobre las Ventas (**10%**), Contribución Territorial para el Desarrollo Local (**1%**), Impuesto por la Utilización de la Fuerza de Trabajo (**5%**), Contribución a la Seguridad Social (**14%** entidad + **5%** retención trabajador), escala progresiva mensual de Ingresos Personales (mínimo exento **3,260 CUP**), Impuesto sobre Utilidades (**35%**) y Reserva Legal para Pérdidas y Contingencias (**10%** hasta el 20% del capital social).
-- **Código de Trabajo (Ley 116)**: Control de salario mínimo (**2,100 CUP/mes**), provisión automática del **9.09%** de vacaciones anuales pagadas, estímulo por ventas y registro de faltantes en caja (Cuenta 330 — Responsabilidad Material).
-- **Contabilidad Cubana (NCIF)**: Generación automática de asientos de partida doble (Libro Diario y Balance de Comprobación) en cada operación.
+Puedes probar la empresa demostrativa **Kiosko La Ceiba S.U.R.L.** desde la portada en un clic o con cualquiera de sus correos (contraseña `kiosko2026`, código de afiliación `kiosko-CEIBA1`):
 
-> *Nota*: Todas las tasas tributarias, topes de precios y límites bancarios son configurables desde el módulo **Leyes e Inspección** para adaptarse a nuevas disposiciones de la Gaceta Oficial o acuerdos del Consejo de la Administración Municipal (CAM).
+| Puesto | Correo | Usuario |
+| --- | --- | --- |
+| Creador / Jefe | `alejandro@laceiba.cu` | `jefe` |
+| Económica | `beatriz@laceiba.cu` | `economico` |
+| Almacenero | `carlos@laceiba.cu` | `almacenero` |
+| Vendedores Turno Mañana | `dayana@laceiba.cu` (Caja 1) · `ernesto@laceiba.cu` (Caja 2) | `vendedor1` · `vendedor2` |
+| Vendedores Turno Tarde | `yaima@laceiba.cu` (Caja 1) · `luis@laceiba.cu` (Caja 2) | `vendedor3` · `vendedor4` |
 
-## Puesta en Marcha
+## Ejecución local
 
-### Opción 1: Servidor completo con base de datos SQLite (recomendado para operar en el kiosko)
 ```bash
 npm install
-npm run dev       # Servidor unificado (API + interfaz) en http://0.0.0.0:3000
-npm test          # Pruebas automatizadas de API, roles y reglas legales cubanas
-npm run build     # Compilación de producción
-npm start         # Servidor en modo producción en http://0.0.0.0:3000
+npm run dev       # Servidor Express + SQLite + Vite en http://0.0.0.0:3000
+npm test          # Suite automatizada de pruebas (9 escenarios E2E)
+npm run build     # Compilación de producción en ./dist (lista para GitHub Pages)
+npm start         # Servidor en producción sirviendo ./dist
 ```
-Luego abre `http://localhost:3000` en el navegador (o la IP local de la PC para que los 2 vendedores, el almacenero, el económico y el jefe entren desde sus teléfonos o tablets en la misma red Wi-Fi).
-
-### Opción 2: Prueba directa en GitHub Pages (sin instalar servidor)
-El proyecto incluye el flujo `.github/workflows/deploy-pages.yml` y un motor autónomo con persistencia en `localStorage` para probar el 100% de las funciones directamente desde el navegador:
-1. Fusiona (*Merge*) el Pull Request hacia la rama `main`.
-2. En GitHub ve a **Settings → Pages → Build and deployment → Source** y selecciona **GitHub Actions** *(en cuentas gratuitas de GitHub, el repositorio debe ser público para usar GitHub Pages)*.
-3. Accede a `https://chaindev17.github.io/Gestor-de-Kiosko/`.
-
-### Credenciales Iniciales de Demostración
-- Usuarios: `jefe`, `economico`, `almacenero`, `vendedor1`, `vendedor2`, `vendedor3`, `vendedor4`
-- Contraseña inicial: `kiosko2026` (también incluye acceso directo en 1 clic por puesto).

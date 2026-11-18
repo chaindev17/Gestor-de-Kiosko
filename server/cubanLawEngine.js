@@ -1,4 +1,4 @@
-import { nextDocCode, roundCup } from './db.js';
+import { hydrateConfigGovernance, nextDocCode, roundCup } from './db.js';
 import { logAutomation } from './auth.js';
 
 export const NCIF_ACCOUNTS = {
@@ -67,7 +67,7 @@ export function getOnatDueDate(period) {
 }
 
 export function getConfig(db) {
-  return db.prepare('SELECT * FROM business_config WHERE id = 1').get();
+  return hydrateConfigGovernance(db.prepare('SELECT * FROM business_config WHERE id = 1').get());
 }
 
 /**

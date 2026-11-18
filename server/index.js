@@ -5,7 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb } from './db.js';
 import { seedIfEmpty } from './seed.js';
+import { initPlatform } from './platform.js';
 import authRoutes from './routes/auth.js';
+import platformRoutes from './routes/platform.js';
 import configRoutes from './routes/config.js';
 import warehouseRoutes from './routes/warehouse.js';
 import posRoutes from './routes/pos.js';
@@ -17,6 +19,7 @@ const rootDir = path.resolve(__dirname, '..');
 export function createApiApp(dbPath) {
   const db = getDb(dbPath);
   seedIfEmpty(db);
+  initPlatform(dbPath);
 
   const app = express();
   app.disable('x-powered-by');
@@ -24,10 +27,11 @@ export function createApiApp(dbPath) {
   app.use(cookieParser());
 
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'gestor-de-kiosko', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', service: 'gestor-de-kiosko', multi_tenant: true, timestamp: new Date().toISOString() });
   });
 
   app.use('/api/auth', authRoutes);
+  app.use('/api/platform', platformRoutes);
   app.use('/api/config', configRoutes);
   app.use('/api/warehouse', warehouseRoutes);
   app.use('/api/pos', posRoutes);

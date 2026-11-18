@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,26 +7,181 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const defaultDbPath = path.resolve(__dirname, '..', 'data', 'kiosko.db');
 
+export const tenantDbStorage = new AsyncLocalStorage();
+
+export const DEFAULT_MODULES = {
+  pos: true,
+  ipv: true,
+  warehouse: true,
+  pricing: true,
+  banking: true,
+  onat: true,
+  payroll: true,
+  accounting: true,
+  compliance: true,
+};
+
+export const DEFAULT_PERMISSIONS = {
+  vendedor_request_restock: true,
+  vendedor_view_pricelist: true,
+  vendedor_open_shift: true,
+  almacenero_create_products: true,
+  almacenero_view_pricelist: true,
+  almacenero_view_compliance: true,
+  economico_edit_prices_directly: true,
+  economico_approve_mermas: true,
+  economico_manage_config: true,
+};
+
+export const MANAGEMENT_PRESETS = {
+  kiosko_completo: {
+    id: 'kiosko_completo',
+    name: 'Kiosko Integral',
+    tagline: 'Equipo por puestos, doble caja y control fiscal completo',
+    max_sellers_per_shift: 2,
+    owner_can_operate_pos: 0,
+    flexible_role_limits: 0,
+    require_cuban_ci: 1,
+    auto_restock_enabled: 1,
+    auto_accounting_enabled: 1,
+    auto_deposit_order_enabled: 1,
+    strict_price_cap_block: 1,
+    strict_bancarizacion_block: 1,
+    modules: { ...DEFAULT_MODULES },
+    permissions: { ...DEFAULT_PERMISSIONS },
+  },
+  equipo_compacto: {
+    id: 'equipo_compacto',
+    name: 'Equipo Compacto',
+    tagline: 'Ventas, turnos, stock, precios y cobros QR sin complejidad extra',
+    max_sellers_per_shift: 2,
+    owner_can_operate_pos: 1,
+    flexible_role_limits: 1,
+    require_cuban_ci: 0,
+    auto_restock_enabled: 1,
+    auto_accounting_enabled: 1,
+    auto_deposit_order_enabled: 1,
+    strict_price_cap_block: 1,
+    strict_bancarizacion_block: 0,
+    modules: {
+      pos: true,
+      ipv: true,
+      warehouse: true,
+      pricing: true,
+      banking: true,
+      onat: true,
+      payroll: false,
+      accounting: false,
+      compliance: false,
+    },
+    permissions: { ...DEFAULT_PERMISSIONS },
+  },
+  solo_dueno: {
+    id: 'solo_dueno',
+    name: 'Mostrador Ágil',
+    tagline: 'Empieza operando tú mismo y suma afiliados cuando crezcas',
+    max_sellers_per_shift: 1,
+    owner_can_operate_pos: 1,
+    flexible_role_limits: 1,
+    require_cuban_ci: 0,
+    auto_restock_enabled: 1,
+    auto_accounting_enabled: 1,
+    auto_deposit_order_enabled: 0,
+    strict_price_cap_block: 0,
+    strict_bancarizacion_block: 0,
+    modules: {
+      pos: true,
+      ipv: true,
+      warehouse: true,
+      pricing: true,
+      banking: true,
+      onat: false,
+      payroll: false,
+      accounting: false,
+      compliance: false,
+    },
+    permissions: { ...DEFAULT_PERMISSIONS },
+  },
+  a_medida: {
+    id: 'a_medida',
+    name: 'A mi medida',
+    tagline: 'El creador elige cada módulo, regla y permiso manualmente',
+    max_sellers_per_shift: 2,
+    owner_can_operate_pos: 1,
+    flexible_role_limits: 1,
+    require_cuban_ci: 0,
+    auto_restock_enabled: 1,
+    auto_accounting_enabled: 1,
+    auto_deposit_order_enabled: 1,
+    strict_price_cap_block: 1,
+    strict_bancarizacion_block: 1,
+    modules: { ...DEFAULT_MODULES },
+    permissions: { ...DEFAULT_PERMISSIONS },
+  },
+};
+
+export function hydrateConfigGovernance(row) {
+  if (!row) return null;
+  let parsedModules = {};
+  let parsedPermissions = {};
+  try {
+    parsedModules = row.modules_json ? JSON.parse(row.modules_json) : {};
+  } catch {
+    parsedModules = {};
+  }
+  try {
+    parsedPermissions = row.permissions_json ? JSON.parse(row.permissions_json) : {};
+  } catch {
+    parsedPermissions = {};
+  }
+  const modules = { ...DEFAULT_MODULES, ...parsedModules, pos: parsedModules.pos !== false };
+  const permissions = { ...DEFAULT_PERMISSIONS, ...parsedPermissions };
+  return {
+    ...row,
+    modules,
+    permissions,
+  };
+}
+
 let dbInstance = null;
 
-export function getDb(customPath) {
-  if (dbInstance) return dbInstance;
-  const dbPath = customPath || process.env.KIOSKO_DB_PATH || defaultDbPath;
+export function runWithDb(db, fn) {
+  return tenantDbStorage.run(db, fn);
+}
+
+export function openTenantDb(dbPath) {
   if (dbPath !== ':memory:') {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   }
   const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode = WAL;');
+  if (dbPath !== ':memory:') {
+    db.exec('PRAGMA journal_mode = WAL;');
+  }
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   initSchema(db);
-  dbInstance = db;
+  migrateTenantSchema(db);
   return db;
+}
+
+export function getDb(customPath) {
+  if (!customPath) {
+    const scoped = tenantDbStorage.getStore();
+    if (scoped) return scoped;
+  }
+  if (dbInstance) return dbInstance;
+  const dbPath = customPath || process.env.KIOSKO_DB_PATH || defaultDbPath;
+  dbInstance = openTenantDb(dbPath);
+  return dbInstance;
 }
 
 export function closeDb() {
   if (dbInstance) {
-    dbInstance.close();
+    try {
+      dbInstance.close();
+    } catch {
+      // ignore close error
+    }
     dbInstance = null;
   }
 }
@@ -57,11 +213,58 @@ export function nextDocCode(db, table, column, prefix, pad = 4) {
   return `${prefix}-${String(next).padStart(pad, '0')}`;
 }
 
+function ensureColumn(db, table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+export function migrateTenantSchema(db) {
+  const defaultMods = JSON.stringify(DEFAULT_MODULES).replace(/'/g, "''");
+  const defaultPerms = JSON.stringify(DEFAULT_PERMISSIONS).replace(/'/g, "''");
+
+  ensureColumn(db, 'business_config', 'company_code', "TEXT NOT NULL DEFAULT 'kiosko-CEIBA1'");
+  ensureColumn(
+    db,
+    'business_config',
+    'business_type',
+    "TEXT NOT NULL DEFAULT 'Kiosko y Comercio Minorista'"
+  );
+  ensureColumn(
+    db,
+    'business_config',
+    'management_preset',
+    "TEXT NOT NULL DEFAULT 'kiosko_completo'"
+  );
+  ensureColumn(db, 'business_config', 'whatsapp_phone', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'business_config', 'contact_email', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'business_config', 'join_mode', "TEXT NOT NULL DEFAULT 'APPROVAL'");
+  ensureColumn(db, 'business_config', 'flexible_role_limits', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'business_config', 'require_cuban_ci', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'business_config', 'owner_can_operate_pos', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'business_config', 'modules_json', `TEXT NOT NULL DEFAULT '${defaultMods}'`);
+  ensureColumn(
+    db,
+    'business_config',
+    'permissions_json',
+    `TEXT NOT NULL DEFAULT '${defaultPerms}'`
+  );
+
+  ensureColumn(db, 'users', 'email', "TEXT NOT NULL DEFAULT ''");
+}
+
 export function initSchema(db) {
+  const defaultMods = JSON.stringify(DEFAULT_MODULES).replace(/'/g, "''");
+  const defaultPerms = JSON.stringify(DEFAULT_PERMISSIONS).replace(/'/g, "''");
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS business_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
+      company_code TEXT NOT NULL DEFAULT 'kiosko-CEIBA1',
       business_name TEXT NOT NULL,
+      business_type TEXT NOT NULL DEFAULT 'Kiosko y Comercio Minorista',
+      management_preset TEXT NOT NULL DEFAULT 'kiosko_completo',
       legal_form TEXT NOT NULL CHECK (legal_form IN ('MIPYME', 'TCP')),
       nit TEXT NOT NULL,
       reeup_code TEXT DEFAULT '',
@@ -69,6 +272,14 @@ export function initSchema(db) {
       province TEXT NOT NULL,
       address TEXT NOT NULL,
       activity_description TEXT NOT NULL,
+      whatsapp_phone TEXT NOT NULL DEFAULT '',
+      contact_email TEXT NOT NULL DEFAULT '',
+      join_mode TEXT NOT NULL DEFAULT 'APPROVAL',
+      flexible_role_limits INTEGER NOT NULL DEFAULT 0,
+      require_cuban_ci INTEGER NOT NULL DEFAULT 1,
+      owner_can_operate_pos INTEGER NOT NULL DEFAULT 0,
+      modules_json TEXT NOT NULL DEFAULT '${defaultMods}',
+      permissions_json TEXT NOT NULL DEFAULT '${defaultPerms}',
       bank_name TEXT NOT NULL,
       fiscal_account_cup TEXT NOT NULL,
       fiscal_account_titular TEXT NOT NULL,
@@ -115,13 +326,14 @@ export function initSchema(db) {
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
+      email TEXT NOT NULL DEFAULT '',
       password_hash TEXT NOT NULL,
       full_name TEXT NOT NULL,
       ci TEXT NOT NULL,
       nit_personal TEXT DEFAULT '',
       role TEXT NOT NULL CHECK (role IN ('jefe', 'economico', 'almacenero', 'vendedor')),
       shift_template_id INTEGER REFERENCES shift_templates(id),
-      default_register INTEGER CHECK (default_register IN (1, 2) OR default_register IS NULL),
+      default_register INTEGER CHECK ((default_register BETWEEN 1 AND 6) OR default_register IS NULL),
       contract_type TEXT NOT NULL DEFAULT 'Indeterminado',
       contract_date TEXT NOT NULL,
       base_salary_cup REAL NOT NULL,
@@ -173,7 +385,7 @@ export function initSchema(db) {
     CREATE TABLE IF NOT EXISTS shift_registers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       shift_session_id INTEGER NOT NULL REFERENCES shift_sessions(id),
-      register_number INTEGER NOT NULL CHECK (register_number IN (1, 2)),
+      register_number INTEGER NOT NULL CHECK (register_number BETWEEN 1 AND 6),
       seller_id INTEGER NOT NULL REFERENCES users(id),
       status TEXT NOT NULL CHECK (status IN ('ABIERTA', 'ARQUEADA', 'VALIDADA')),
       opening_cash_cup REAL NOT NULL DEFAULT 3000,

@@ -10,6 +10,7 @@ import {
   runComplianceAudit,
 } from '../cubanLawEngine.js';
 import { resetAllData } from '../seed.js';
+import { getPendingAffiliationsCount } from '../platform.js';
 
 const router = Router();
 
@@ -25,8 +26,12 @@ router.put('/', requireAuth, requireRole('jefe', 'economico'), (req, res) => {
   const current = getConfig(db);
   const body = req.body || {};
 
-  // Only Jefe can modify legal form, business name, social capital, or max sellers
   const isJefe = req.user.role === 'jefe';
+  if (!isJefe && !current.permissions?.economico_manage_config) {
+    return res.status(403).json({
+      error: 'El creador de la empresa reservó la edición de configuración únicamente para Dirección.',
+    });
+  }
   const nextLegalForm =
     isJefe && ['MIPYME', 'TCP'].includes(body.legal_form) ? body.legal_form : current.legal_form;
   const nextMinWage = Math.max(2100, Number(body.min_wage_cup ?? current.min_wage_cup));
@@ -178,7 +183,7 @@ router.get('/staff', requireAuth, requireRole('jefe', 'economico'), (_req, res) 
   const shifts = db.prepare('SELECT * FROM shift_templates ORDER BY id').all();
   const users = db
     .prepare(
-      `SELECT u.id, u.username, u.full_name, u.ci, u.nit_personal, u.role,
+      `SELECT u.id, u.username, u.email, u.full_name, u.ci, u.nit_personal, u.role,
               u.shift_template_id, st.name AS shift_name, st.start_time, st.end_time,
               u.default_register, u.contract_type, u.contract_date,
               u.base_salary_cup, u.sales_commission_pct, u.phone, u.active, u.created_at,
@@ -226,9 +231,13 @@ router.post('/staff', requireAuth, requireRole('jefe'), (req, res) => {
   if (!['jefe', 'economico', 'almacenero', 'vendedor'].includes(role)) {
     return res.status(400).json({ error: 'Cargo inválido.' });
   }
-  const cleanCi = String(ci).replace(/\D/g, '');
-  if (cleanCi.length !== 11) {
+  const rawCi = String(ci).trim();
+  const cleanCi = config.require_cuban_ci ? rawCi.replace(/\D/g, '') : rawCi;
+  if (config.require_cuban_ci && cleanCi.length !== 11) {
     return res.status(400).json({ error: 'El Carné de Identidad cubano (CI) debe tener exactamente 11 dígitos.' });
+  }
+  if (!config.require_cuban_ci && cleanCi.length < 4) {
+    return res.status(400).json({ error: 'Indique un documento de identidad válido (mínimo 4 caracteres).' });
   }
 
   const salary = roundCup(base_salary_cup);
@@ -249,15 +258,15 @@ router.post('/staff', requireAuth, requireRole('jefe'), (req, res) => {
     }
   }
 
-  // Enforce 1 jefe, 1 economico, 1 almacenero or 2 sellers per shift
-  if (['jefe', 'economico', 'almacenero'].includes(role)) {
+  // Enforce 1 jefe, 1 economico, 1 almacenero unless creator enabled flexible_role_limits
+  if (!config.flexible_role_limits && ['jefe', 'economico', 'almacenero'].includes(role)) {
     const existsRole = db
       .prepare(`SELECT COUNT(*) AS cnt FROM users WHERE active = 1 AND role = ?`)
       .get(role).cnt;
     if (existsRole >= 1) {
       const label = role === 'jefe' ? 'Jefe del Negocio' : role === 'economico' ? 'Económico' : 'Almacenero';
       return res.status(400).json({
-        error: `La plantilla del kiosko establece exactamente 1 ${label} activo. Desactive o edite al titular actual antes de asignar otro.`,
+        error: `La plantilla actual establece 1 ${label} activo. Desactive al actual o habilite plazas múltiples en "Mi Empresa y Modo".`,
       });
     }
   }
@@ -269,17 +278,22 @@ router.post('/staff', requireAuth, requireRole('jefe'), (req, res) => {
       return res.status(400).json({ error: 'Todo vendedor debe estar asignado a un turno de trabajo.' });
     }
     shiftId = Number(shift_template_id);
+    const maxSellers = Math.max(1, Number(config.max_sellers_per_shift || 2));
     const sellersInShift = db
       .prepare(`SELECT * FROM users WHERE active = 1 AND role = 'vendedor' AND shift_template_id = ?`)
       .all(shiftId);
-    if (sellersInShift.length >= Number(config.max_sellers_per_shift)) {
+    if (sellersInShift.length >= maxSellers) {
       return res.status(400).json({
-        error: `Ese turno ya cuenta con el máximo de ${config.max_sellers_per_shift} vendedores activos (Caja 1 y Caja 2). Asigne otro turno o cree un nuevo turno.`,
+        error: `Ese turno ya cuenta con el máximo de ${maxSellers} vendedor(es) activos. Amplíe las cajas por turno en "Mi Empresa y Modo" o elija otro turno.`,
       });
     }
-    const desiredReg = Number(default_register) === 2 ? 2 : 1;
-    const regTaken = sellersInShift.some((s) => s.default_register === desiredReg);
-    regNum = regTaken ? (desiredReg === 1 ? 2 : 1) : desiredReg;
+    const taken = new Set(sellersInShift.map((s) => Number(s.default_register)));
+    const desiredReg = Math.max(1, Math.min(maxSellers, Number(default_register) || 1));
+    if (!taken.has(desiredReg)) {
+      regNum = desiredReg;
+    } else {
+      regNum = Array.from({ length: maxSellers }, (_, i) => i + 1).find((n) => !taken.has(n)) || 1;
+    }
   }
 
   const dupUser = db
@@ -370,7 +384,7 @@ router.put('/staff/:id', requireAuth, requireRole('jefe'), (req, res) => {
     }
   }
 
-  if (nextActive === 1 && ['jefe', 'economico', 'almacenero'].includes(nextRole)) {
+  if (!config.flexible_role_limits && nextActive === 1 && ['jefe', 'economico', 'almacenero'].includes(nextRole)) {
     const otherSame = db
       .prepare(`SELECT id FROM users WHERE active = 1 AND role = ? AND id != ?`)
       .get(nextRole, id);
@@ -381,8 +395,12 @@ router.put('/staff/:id', requireAuth, requireRole('jefe'), (req, res) => {
     }
   }
 
-  const nextCi = body.ci ? String(body.ci).replace(/\D/g, '') : emp.ci;
-  if (nextCi.length !== 11) {
+  const nextCi = body.ci
+    ? config.require_cuban_ci
+      ? String(body.ci).replace(/\D/g, '')
+      : String(body.ci).trim()
+    : emp.ci;
+  if (config.require_cuban_ci && nextCi.length !== 11) {
     return res.status(400).json({ error: 'El CI debe tener 11 dígitos.' });
   }
 
@@ -450,7 +468,7 @@ router.post('/shifts', requireAuth, requireRole('jefe'), (req, res) => {
   res.status(201).json({ id: Number(result.lastInsertRowid) });
 });
 
-router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (_req, res) => {
+router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (req, res) => {
   const db = getDb();
   const today = getTodayIso();
   const period = getCurrentPeriod();
@@ -610,6 +628,7 @@ router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (_req, re
       deposits: pendingDeposits,
       restocks: pendingRestocks,
       unvalidated_shifts: unvalidatedShifts,
+      affiliations_count: req.company?.id ? getPendingAffiliationsCount(req.company.id) : 0,
     },
     top_products: topProducts,
     automation_feed: automationFeed,
@@ -627,9 +646,52 @@ router.get('/audit', requireAuth, requireRole('jefe', 'economico'), (_req, res) 
 router.post('/reset', requireAuth, requireRole('jefe'), (req, res) => {
   const db = getDb();
   const mode = req.body?.mode === 'clean' ? 'clean' : 'demo';
-  runInTransaction(db, () => {}); // verify db writable
+
+  // For real user-created companies, clean operational history while keeping creator, affiliated staff & company settings
+  if (req.company && !req.company.is_demo) {
+    runInTransaction(db, () => {
+      const txTables = [
+        'price_change_requests',
+        'tax_filings',
+        'payroll_items',
+        'payroll_runs',
+        'journal_lines',
+        'journal_entries',
+        'expenses',
+        'bank_deposits',
+        'sale_items',
+        'sales',
+        'restock_requests',
+        'inventory_movements',
+        'shift_ipv_snapshots',
+        'shift_registers',
+        'shift_sessions',
+        'automation_events',
+      ];
+      db.exec('PRAGMA foreign_keys = OFF;');
+      for (const t of txTables) db.exec(`DELETE FROM ${t};`);
+      if (mode === 'clean') {
+        db.exec('DELETE FROM products;');
+      }
+      db.exec('PRAGMA foreign_keys = ON;');
+      logAudit(
+        db,
+        req.user,
+        'REINICIO_OPERACIONES',
+        'Mi Empresa',
+        `Operaciones reiniciadas (${mode}) conservando usuarios afiliados y configuración de la empresa.`
+      );
+    });
+    return res.json({
+      ok: true,
+      mode,
+      message: 'Operaciones de tu empresa reiniciadas en limpio conservando tu equipo y configuración.',
+    });
+  }
+
+  runInTransaction(db, () => {});
   resetAllData(db, mode);
-  res.json({
+  return res.json({
     ok: true,
     mode,
     message:
