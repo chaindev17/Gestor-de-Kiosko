@@ -58,7 +58,7 @@ function MerchantQrBadge({ code, amount }) {
   );
 }
 
-export default function PosPage({ user, onNavigate, onRefreshBadges, notify }) {
+export default function PosPage({ user, badges = {}, onNavigate, onRefreshBadges, notify }) {
   const [products, setProducts] = useState([]);
   const [shiftBundle, setShiftBundle] = useState(null);
   const [payConfig, setPayConfig] = useState(null);
@@ -225,14 +225,31 @@ export default function PosPage({ user, onNavigate, onRefreshBadges, notify }) {
 
   return (
     <div className="space-y-4">
+      {/* Incoming WhatsApp orders quick banner */}
+      {Number(badges?.pending_orders) > 0 && (
+        <div className="rounded-2xl bg-[#E6F5EF] border border-[#BDE5D5] px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-bold text-[#113D2F]">
+            💬 Tienes {badges.pending_orders} {badges.pending_orders === 1 ? 'pedido' : 'pedidos'} de WhatsApp esperando — puedes cobrarlo y descontar stock en 1 clic.
+          </p>
+          <button
+            type="button"
+            onClick={() => onNavigate('catalog-wa')}
+            className="rounded-full bg-[#15614B] hover:bg-[#104B3A] text-white text-xs font-bold px-3.5 py-1.5 cursor-pointer"
+          >
+            Ver pedidos →
+          </button>
+        </div>
+      )}
+
       {/* Top status bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-[#171C22]">
-            Punto de Venta del Kiosko (CUP)
+          <p className="kicker">Mostrador</p>
+          <h1 className="font-editorial text-3xl text-[#181715]">
+            Cobrar en Caja
           </h1>
-          <p className="text-xs text-[#66707D]">
-            Precios oficiales controlados por MFP · Descuento automático de IPV y asiento contable NCIF en cada cobro
+          <p className="text-xs text-[#6E685F]">
+            Toca los productos para armar el ticket · El stock y las cuentas se actualizan solos
           </p>
         </div>
 

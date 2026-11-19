@@ -11,6 +11,12 @@ import {
   saveState,
   setActiveStaticTenant,
 } from './staticEngine.js';
+import {
+  buildWhatsappUrl,
+  formatCustomerReplyWhatsapp,
+  formatOrderWhatsappMessage,
+  sanitizeWhatsappDigits,
+} from './whatsapp.js';
 
 const PLATFORM_KEY = 'gestor_kiosko_platform_v2';
 const DEMO_TENANT_KEY = 'gestor_kiosko_cuba_state_v1';
@@ -18,6 +24,7 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export const STATIC_DEFAULT_MODULES = {
   pos: true,
+  catalog: true,
   ipv: true,
   warehouse: true,
   pricing: true,
@@ -29,6 +36,7 @@ export const STATIC_DEFAULT_MODULES = {
 };
 
 export const STATIC_DEFAULT_PERMISSIONS = {
+  vendedor_manage_orders: true,
   vendedor_request_restock: true,
   vendedor_view_pricelist: true,
   vendedor_open_shift: true,
@@ -72,6 +80,7 @@ export const STATIC_PRESETS = {
     strict_bancarizacion_block: 0,
     modules: {
       pos: true,
+      catalog: true,
       ipv: true,
       warehouse: true,
       pricing: true,
@@ -98,6 +107,7 @@ export const STATIC_PRESETS = {
     strict_bancarizacion_block: 0,
     modules: {
       pos: true,
+      catalog: true,
       ipv: true,
       warehouse: true,
       pricing: true,
@@ -1230,6 +1240,410 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
       email: body.email || body.username,
       password: body.password,
     });
+  }
+
+  // =========================================================================
+  // Public Customer Catalog & WhatsApp Orders (Static / GitHub Pages parity)
+  // =========================================================================
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const availStock = (prod, cfg) =>
+    (cfg.catalog_stock_source || 'BOTH') === 'KIOSKO'
+      ? Math.max(0, r2(prod.kiosk_stock))
+      : Math.max(0, r2(Number(prod.kiosk_stock || 0) + Number(prod.warehouse_stock || 0)));
+
+  const buildStaticPublicCatalog = (ts, comp) => {
+    const cfg = ts.config;
+    const wp = String(cfg.whatsapp_phone || cfg.transfermovil_phone || '').trim();
+    const prods = (ts.products || [])
+      .filter((pr) => pr.active !== 0 && pr.catalog_visible !== 0)
+      .map((pr) => {
+        const av = availStock(pr, cfg);
+        const inStock = av > 0 || Boolean(cfg.catalog_allow_backorder);
+        return {
+          id: pr.id,
+          sku: pr.sku,
+          name: pr.name,
+          category: pr.category,
+          unit: pr.unit,
+          sale_price_cup: r2(pr.sale_price_cup),
+          available_stock: av,
+          in_stock: inStock,
+          catalog_featured: Boolean(pr.catalog_featured),
+          catalog_description: pr.catalog_description || '',
+          image_url: pr.image_url || '',
+        };
+      })
+      .filter((pr) => pr.in_stock || Boolean(cfg.catalog_show_out_of_stock))
+      .sort((a, b) => Number(b.catalog_featured) - Number(a.catalog_featured) || a.name.localeCompare(b.name));
+
+    return {
+      store: {
+        company_code: comp?.company_code || cfg.company_code,
+        business_name: cfg.business_name,
+        business_type: cfg.business_type || 'Kiosko y Comercio',
+        catalog_enabled: cfg.catalog_enabled !== 0 && cfg.modules?.catalog !== false,
+        whatsapp_phone: wp,
+        whatsapp_digits: sanitizeWhatsappDigits(wp),
+        catalog_welcome:
+          cfg.catalog_welcome || 'Elige tus productos, arma tu pedido y envíalo directo a nuestro WhatsApp.',
+        catalog_hours: cfg.catalog_hours || 'Todos los días · 7:00 a 22:00',
+        address: cfg.address || '',
+        municipality: cfg.municipality || '',
+        province: cfg.province || '',
+        catalog_allow_pickup: Boolean(cfg.catalog_allow_pickup ?? 1),
+        catalog_allow_delivery: Boolean(cfg.catalog_allow_delivery ?? 1),
+        catalog_delivery_fee_cup: r2(cfg.catalog_delivery_fee_cup ?? 0),
+        catalog_free_delivery_from_cup: r2(cfg.catalog_free_delivery_from_cup ?? 0),
+        catalog_min_order_cup: r2(cfg.catalog_min_order_cup ?? 0),
+        catalog_show_out_of_stock: Boolean(cfg.catalog_show_out_of_stock ?? 0),
+        catalog_allow_backorder: Boolean(cfg.catalog_allow_backorder ?? 0),
+        qr_discount_pct: r2(cfg.qr_discount_pct ?? 0),
+        has_transfermovil: Boolean(cfg.transfermovil_merchant_code || cfg.transfermovil_phone),
+        has_enzona: Boolean(cfg.enzona_merchant_code),
+      },
+      categories: Array.from(new Set(prods.map((pr) => pr.category))),
+      products: prods,
+    };
+  };
+
+  const findCompByCode = (rawCode) => {
+    let clean = String(rawCode || '').trim();
+    if (!clean) return null;
+    if (/^kiosko[-_]/i.test(clean)) clean = `kiosko-${clean.slice(7).toUpperCase()}`;
+    else clean = `kiosko-${clean.toUpperCase()}`;
+    return plat.companies.find((c) => c.active !== false && c.company_code.toUpperCase() === clean.toUpperCase()) || null;
+  };
+
+  const pubCatMatch = p.match(/^\/api\/catalog\/([^/]+)$/);
+  if (pubCatMatch && method === 'GET') {
+    const comp = findCompByCode(decodeURIComponent(pubCatMatch[1]));
+    if (!comp) {
+      const e = new Error('No encontramos un catálogo con ese código.');
+      e.status = 404;
+      throw e;
+    }
+    const ts = loadState(comp.storage_key);
+    return buildStaticPublicCatalog(ts, comp);
+  }
+
+  const pubOrderMatch = p.match(/^\/api\/catalog\/([^/]+)\/orders$/);
+  if (pubOrderMatch && method === 'POST') {
+    const comp = findCompByCode(decodeURIComponent(pubOrderMatch[1]));
+    if (!comp) {
+      const e = new Error('Comercio no encontrado.');
+      e.status = 404;
+      throw e;
+    }
+    const ts = loadState(comp.storage_key);
+    const cfg = ts.config;
+    if (cfg.catalog_enabled === 0 || cfg.modules?.catalog === false) {
+      throw new Error('Este comercio tiene pausada la recepción de pedidos en este momento.');
+    }
+    const customerName = String(body.customer_name || '').trim();
+    const customerPhone = String(body.customer_phone || '').trim();
+    const notes = String(body.notes || '').trim();
+    if (customerName.length < 2) throw new Error('Escribe tu nombre para identificar tu pedido.');
+    const rawItems = Array.isArray(body.items) ? body.items : [];
+    if (!rawItems.length) throw new Error('Agrega al menos un producto a tu pedido.');
+
+    let deliveryMode = String(body.delivery_mode || 'RETIRO').toUpperCase() === 'DOMICILIO' ? 'DOMICILIO' : 'RETIRO';
+    if (deliveryMode === 'DOMICILIO' && !cfg.catalog_allow_delivery) deliveryMode = 'RETIRO';
+    if (deliveryMode === 'RETIRO' && !cfg.catalog_allow_pickup && cfg.catalog_allow_delivery) deliveryMode = 'DOMICILIO';
+    const deliveryAddress = deliveryMode === 'DOMICILIO' ? String(body.delivery_address || '').trim() : '';
+    if (deliveryMode === 'DOMICILIO' && deliveryAddress.length < 4) {
+      throw new Error('Indica tu dirección o referencia para el envío a domicilio.');
+    }
+
+    const rawPay = String(body.payment_method || 'EFECTIVO').toUpperCase();
+    const paymentMethod = ['EFECTIVO', 'TRANSFERMOVIL', 'ENZONA'].includes(rawPay) ? rawPay : 'EFECTIVO';
+
+    let subtotal = 0;
+    const items = [];
+    rawItems.forEach((raw, idx) => {
+      const pr = ts.products.find((x) => x.id === Number(raw.product_id) && x.active !== 0);
+      const qty = r2(raw.quantity);
+      if (!pr || qty <= 0) return;
+      const av = availStock(pr, cfg);
+      if (!cfg.catalog_allow_backorder && qty > av + 0.001) {
+        throw new Error(`De "${pr.name}" quedan ${av} ${pr.unit} disponibles.`);
+      }
+      const lineSub = r2(pr.sale_price_cup * qty);
+      subtotal = r2(subtotal + lineSub);
+      items.push({
+        id: idx + 1,
+        product_id: pr.id,
+        product_name: pr.name,
+        unit: pr.unit,
+        quantity: qty,
+        unit_price_cup: r2(pr.sale_price_cup),
+        subtotal_cup: lineSub,
+      });
+    });
+    if (!items.length) throw new Error('Selecciona al menos un producto válido.');
+
+    const isQr = paymentMethod === 'TRANSFERMOVIL' || paymentMethod === 'ENZONA';
+    const discountCup = isQr && Number(cfg.qr_discount_pct) > 0 ? r2((subtotal * Number(cfg.qr_discount_pct)) / 100) : 0;
+    let deliveryFeeCup = 0;
+    if (deliveryMode === 'DOMICILIO') {
+      const fee = r2(cfg.catalog_delivery_fee_cup || 0);
+      const freeFrom = r2(cfg.catalog_free_delivery_from_cup || 0);
+      deliveryFeeCup = freeFrom > 0 && subtotal >= freeFrom ? 0 : fee;
+    }
+    const totalCup = r2(Math.max(0, subtotal - discountCup + deliveryFeeCup));
+    const cashTendered = paymentMethod === 'EFECTIVO' && Number(body.cash_tendered_cup) > 0 ? r2(body.cash_tendered_cup) : 0;
+
+    if (!Array.isArray(ts.customer_orders)) ts.customer_orders = [];
+    const nextId = (ts.customer_orders.reduce((m, o) => Math.max(m, o.id || 0), 0) || 0) + 1;
+    const orderCode = `PED-${String(nextId).padStart(4, '0')}`;
+    const wp = String(cfg.whatsapp_phone || cfg.transfermovil_phone || '').trim();
+    const order = {
+      id: nextId,
+      order_code: orderCode,
+      status: 'NUEVO',
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      delivery_mode: deliveryMode,
+      delivery_address: deliveryAddress,
+      payment_method: paymentMethod,
+      cash_tendered_cup: cashTendered,
+      notes,
+      subtotal_cup: subtotal,
+      discount_cup: discountCup,
+      delivery_fee_cup: deliveryFeeCup,
+      total_cup: totalCup,
+      source: 'CATALOGO',
+      sale_id: null,
+      created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+      items,
+    };
+    const whatsappText = formatOrderWhatsappMessage({
+      order,
+      items,
+      store: { business_name: cfg.business_name, currency: 'CUP' },
+    });
+    order.whatsapp_text = whatsappText;
+    ts.customer_orders.unshift(order);
+    saveState(ts, comp.storage_key);
+
+    return {
+      order,
+      items,
+      whatsapp_phone: wp,
+      has_store_whatsapp: sanitizeWhatsappDigits(wp).length >= 7,
+      whatsapp_text: whatsappText,
+      whatsapp_url: buildWhatsappUrl(wp, whatsappText),
+    };
+  }
+
+  // Authenticated catalog admin endpoints
+  if (p.startsWith('/api/catalog-admin/')) {
+    const targetComp = curComp || plat.companies.find((c) => c.is_demo);
+    const ts = loadState(targetComp.storage_key);
+    const cfg = ts.config;
+    if (!Array.isArray(ts.customer_orders)) ts.customer_orders = [];
+
+    if (p === '/api/catalog-admin/overview' && method === 'GET') {
+      const wp = String(cfg.whatsapp_phone || cfg.transfermovil_phone || '').trim();
+      const statusRank = { NUEVO: 0, PREPARANDO: 1, LISTO: 2, ENTREGADO: 3, CANCELADO: 4 };
+      const orders = [...ts.customer_orders]
+        .sort((a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || (b.id || 0) - (a.id || 0))
+        .map((o) => {
+          const nextSt = o.status === 'NUEVO' ? 'PREPARANDO' : o.status === 'PREPARANDO' ? 'LISTO' : o.status === 'LISTO' ? 'ENTREGADO' : o.status;
+          const reply = formatCustomerReplyWhatsapp({ order: o, store: { business_name: cfg.business_name }, status: nextSt });
+          return {
+            ...o,
+            customer_whatsapp_url: o.customer_phone ? buildWhatsappUrl(o.customer_phone, reply) : '',
+          };
+        });
+      const products = (ts.products || [])
+        .filter((pr) => pr.active !== 0)
+        .map((pr) => ({
+          ...pr,
+          available_stock: availStock(pr, cfg),
+          catalog_visible: pr.catalog_visible !== 0,
+          catalog_featured: Boolean(pr.catalog_featured),
+        }));
+      const delivered = orders.filter((o) => o.status === 'ENTREGADO');
+      return {
+        company_code: targetComp.company_code,
+        settings: {
+          business_name: cfg.business_name,
+          whatsapp_phone: wp,
+          whatsapp_digits: sanitizeWhatsappDigits(wp),
+          catalog_enabled: cfg.catalog_enabled !== 0,
+          catalog_welcome: cfg.catalog_welcome || '',
+          catalog_hours: cfg.catalog_hours || '',
+          catalog_allow_pickup: Boolean(cfg.catalog_allow_pickup ?? 1),
+          catalog_allow_delivery: Boolean(cfg.catalog_allow_delivery ?? 1),
+          catalog_delivery_fee_cup: r2(cfg.catalog_delivery_fee_cup ?? 0),
+          catalog_free_delivery_from_cup: r2(cfg.catalog_free_delivery_from_cup ?? 0),
+          catalog_min_order_cup: r2(cfg.catalog_min_order_cup ?? 0),
+          catalog_show_out_of_stock: Boolean(cfg.catalog_show_out_of_stock ?? 0),
+          catalog_allow_backorder: Boolean(cfg.catalog_allow_backorder ?? 0),
+          catalog_stock_source: cfg.catalog_stock_source || 'BOTH',
+          qr_discount_pct: r2(cfg.qr_discount_pct ?? 0),
+          address: cfg.address || '',
+        },
+        stats: {
+          new_count: orders.filter((o) => o.status === 'NUEVO').length,
+          active_count: orders.filter((o) => ['NUEVO', 'PREPARANDO', 'LISTO'].includes(o.status)).length,
+          delivered_count: delivered.length,
+          delivered_total_cup: r2(delivered.reduce((s, o) => s + Number(o.total_cup || 0), 0)),
+          visible_products: products.filter((pr) => pr.catalog_visible).length,
+          total_products: products.length,
+          featured_products: products.filter((pr) => pr.catalog_visible && pr.catalog_featured).length,
+        },
+        orders,
+        products,
+        public_preview: buildStaticPublicCatalog(ts, targetComp),
+      };
+    }
+
+    if (p === '/api/catalog-admin/settings' && method === 'PUT') {
+      if (body.whatsapp_phone !== undefined) cfg.whatsapp_phone = String(body.whatsapp_phone).trim();
+      if (body.address !== undefined) cfg.address = String(body.address).trim();
+      if (body.catalog_welcome !== undefined) cfg.catalog_welcome = String(body.catalog_welcome).trim();
+      if (body.catalog_hours !== undefined) cfg.catalog_hours = String(body.catalog_hours).trim();
+      if (body.catalog_stock_source) cfg.catalog_stock_source = body.catalog_stock_source;
+      ['catalog_enabled', 'catalog_allow_pickup', 'catalog_allow_delivery', 'catalog_show_out_of_stock', 'catalog_allow_backorder'].forEach((k) => {
+        if (body[k] !== undefined) cfg[k] = body[k] ? 1 : 0;
+      });
+      ['catalog_delivery_fee_cup', 'catalog_free_delivery_from_cup', 'catalog_min_order_cup'].forEach((k) => {
+        if (body[k] !== undefined) cfg[k] = Math.max(0, r2(body[k]));
+      });
+      if (!cfg.catalog_allow_pickup && !cfg.catalog_allow_delivery) {
+        cfg.catalog_allow_pickup = 1;
+      }
+      saveState(ts, targetComp.storage_key);
+      return { config: cfg };
+    }
+
+    if (p === '/api/catalog-admin/products/quick' && method === 'POST') {
+      const name = String(body.name || '').trim();
+      const salePrice = r2(body.sale_price_cup);
+      if (!name || salePrice <= 0) throw new Error('Indica el nombre y un precio mayor que cero.');
+      const initStock = Math.max(0, r2(body.initial_stock ?? 20));
+      const unitCost = Number(body.unit_cost_cup) > 0 ? r2(body.unit_cost_cup) : r2(salePrice * 0.74);
+      const nextId = (ts.products.reduce((m, x) => Math.max(m, x.id || 0), 0) || 0) + 1;
+      const prod = {
+        id: nextId,
+        sku: `CAT-${String(nextId).padStart(4, '0')}`,
+        name,
+        category: String(body.category || 'General').trim() || 'General',
+        unit: String(body.unit || 'u').trim() || 'u',
+        unit_cost_cup: unitCost,
+        indirect_cost_pct: cfg.indirect_cost_alloc_pct || 8,
+        sale_price_cup: salePrice,
+        is_price_capped: 0,
+        price_cap_cup: null,
+        is_margin_regulated: cfg.strict_price_cap_block ? 1 : 0,
+        sales_tax_exempt: 0,
+        warehouse_stock: 0,
+        kiosk_stock: initStock,
+        warehouse_min_stock: 5,
+        kiosk_min_stock: 3,
+        kiosk_target_stock: 15,
+        current_batch: 'LT-CAT',
+        next_expiry_date: '',
+        catalog_visible: 1,
+        catalog_featured: body.catalog_featured ? 1 : 0,
+        catalog_description: String(body.catalog_description || '').trim(),
+        image_url: String(body.image_url || '').trim(),
+        active: 1,
+      };
+      ts.products.push(prod);
+      saveState(ts, targetComp.storage_key);
+      return { product: prod };
+    }
+
+    const prodMatch = p.match(/^\/api\/catalog-admin\/products\/(\d+)$/);
+    if (prodMatch && method === 'PUT') {
+      const pr = ts.products.find((x) => x.id === Number(prodMatch[1]));
+      if (!pr) throw new Error('Producto no encontrado.');
+      if (body.name !== undefined && String(body.name).trim()) pr.name = String(body.name).trim();
+      if (body.category !== undefined && String(body.category).trim()) pr.category = String(body.category).trim();
+      if (body.sale_price_cup !== undefined && r2(body.sale_price_cup) > 0) pr.sale_price_cup = r2(body.sale_price_cup);
+      if (body.catalog_visible !== undefined) pr.catalog_visible = body.catalog_visible ? 1 : 0;
+      if (body.catalog_featured !== undefined) pr.catalog_featured = body.catalog_featured ? 1 : 0;
+      if (body.catalog_description !== undefined) pr.catalog_description = String(body.catalog_description).trim();
+      if (body.image_url !== undefined) pr.image_url = String(body.image_url).trim();
+      saveState(ts, targetComp.storage_key);
+      return {
+        product: {
+          ...pr,
+          available_stock: availStock(pr, cfg),
+          catalog_visible: Boolean(pr.catalog_visible),
+          catalog_featured: Boolean(pr.catalog_featured),
+        },
+      };
+    }
+
+    const ordStatusMatch = p.match(/^\/api\/catalog-admin\/orders\/(\d+)\/status$/);
+    if (ordStatusMatch && method === 'PUT') {
+      const ord = ts.customer_orders.find((o) => o.id === Number(ordStatusMatch[1]));
+      if (!ord) throw new Error('Pedido no encontrado.');
+      ord.status = String(body.status || 'PREPARANDO').toUpperCase();
+      saveState(ts, targetComp.storage_key);
+      const reply = formatCustomerReplyWhatsapp({ order: ord, store: { business_name: cfg.business_name }, status: ord.status });
+      return {
+        order: ord,
+        reply_text: reply,
+        customer_whatsapp_url: ord.customer_phone ? buildWhatsappUrl(ord.customer_phone, reply) : '',
+      };
+    }
+
+    const ordCheckoutMatch = p.match(/^\/api\/catalog-admin\/orders\/(\d+)\/checkout$/);
+    if (ordCheckoutMatch && method === 'POST') {
+      const ord = ts.customer_orders.find((o) => o.id === Number(ordCheckoutMatch[1]));
+      if (!ord) throw new Error('Pedido no encontrado.');
+      if (ord.sale_id) throw new Error('Este pedido ya fue cobrado.');
+
+      // Ensure kiosk stock has enough (pull from warehouse if available)
+      for (const it of ord.items || []) {
+        const pr = ts.products.find((x) => x.id === it.product_id);
+        if (pr && pr.kiosk_stock < it.quantity && pr.kiosk_stock + pr.warehouse_stock >= it.quantity) {
+          const diff = r2(it.quantity - pr.kiosk_stock);
+          pr.warehouse_stock = r2(pr.warehouse_stock - diff);
+          pr.kiosk_stock = r2(pr.kiosk_stock + diff);
+        }
+      }
+      saveState(ts, targetComp.storage_key);
+
+      setActiveStaticTenant(targetComp.storage_key, pendingCount(plat, targetComp.id));
+      const openSess = ts.sessions.find((x) => x.status === 'ABIERTO');
+      if (!openSess) {
+        handleTenantApi('POST', '/api/pos/shifts/open', { register_number: 1 });
+      }
+      const payMethod = String(body.payment_method || ord.payment_method || 'EFECTIVO').toUpperCase();
+      const saleRes = handleTenantApi('POST', '/api/pos/sales', {
+        items: (ord.items || []).map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
+        payment_method: payMethod,
+        cash_tendered_cup: payMethod === 'EFECTIVO' ? Math.max(ord.total_cup, ord.cash_tendered_cup || 0) : 0,
+        electronic_ref: payMethod !== 'EFECTIVO' ? String(body.electronic_ref || `WA-${ord.order_code}`) : '',
+        customer_phone: ord.customer_phone || '',
+      });
+
+      const tsAfter = loadState(targetComp.storage_key);
+      const ordAfter = tsAfter.customer_orders.find((o) => o.id === ord.id);
+      ordAfter.status = 'ENTREGADO';
+      ordAfter.payment_method = payMethod;
+      ordAfter.sale_id = saleRes.sale?.id || Date.now();
+      ordAfter.receipt_number = saleRes.sale?.receipt_number || 'TK';
+      saveState(tsAfter, targetComp.storage_key);
+
+      const reply = formatCustomerReplyWhatsapp({
+        order: ordAfter,
+        store: { business_name: cfg.business_name },
+        status: 'ENTREGADO',
+      });
+      return {
+        order: ordAfter,
+        receipt_number: ordAfter.receipt_number,
+        total_cup: ordAfter.total_cup,
+        change_given_cup: saleRes.sale?.change_given_cup || 0,
+        customer_whatsapp_url: ordAfter.customer_phone ? buildWhatsappUrl(ordAfter.customer_phone, reply) : '',
+      };
+    }
   }
 
   // Delegate all tenant API calls to the active company's isolated state

@@ -315,17 +315,21 @@ export default function CreateCompanyWizard({
                   />
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-[#3F3C37] mb-1.5">
-                    WhatsApp del negocio <span className="font-normal text-[#857F76]">(opcional)</span>
+                <div className="sm:col-span-2 rounded-2xl bg-[#EDF7ED] border border-[#C6E4C6] p-4">
+                  <label className="block text-xs font-bold text-[#18261C] mb-1">
+                    WhatsApp donde recibirás los pedidos de tus clientes{' '}
+                    <span className="font-normal text-[#386B46]">(con código de país)</span>
                   </label>
                   <input
                     type="tel"
-                    className="input-field"
-                    placeholder="Para compartir invitaciones y contacto"
+                    className="input-field bg-white"
+                    placeholder="Ej: +598 99 123 456  o  +53 5 284 9102"
                     value={whatsappPhone}
                     onChange={(e) => setWhatsappPhone(e.target.value)}
                   />
+                  <p className="mt-1 text-[11px] text-[#2F5D3C]">
+                    Tu empresa incluye un catálogo digital: el cliente elige sus productos y el pedido te llega armado a este WhatsApp.
+                  </p>
                 </div>
               </div>
 
@@ -633,9 +637,9 @@ export default function CreateCompanyWizard({
           </div>
         )}
 
-        {/* STEP 4: Conecta-style Company Ready Card */}
+        {/* STEP 4: Conecta-style Company + Customer Catalog Ready Cards */}
         {step === 4 && createdPayload && (
-          <div className="max-w-xl mx-auto space-y-6 text-center">
+          <div className="max-w-3xl mx-auto space-y-6 text-center">
             <div>
               <p className="kicker text-[#15614B]">Todo listo</p>
               <h1 className="mt-2 font-editorial text-4xl sm:text-5xl text-[#181715]">
@@ -643,57 +647,113 @@ export default function CreateCompanyWizard({
                 <em className="italic text-[#C2542D]">ya está en marcha.</em>
               </h1>
               <p className="mt-2 text-sm text-[#57534E]">
-                Comparte este código con las personas de tu equipo para que se registren con su
-                correo y se afilien a tu empresa.
+                Ya tienes listo tu catálogo para recibir pedidos al WhatsApp y tu código para sumar empleados.
               </p>
             </div>
 
-            <div className="rounded-3xl border border-[#181715] bg-white p-7 shadow-md space-y-5">
-              <div className="flex flex-col items-center gap-3">
-                <QrCodeBadge
-                  value={buildShareLink(createdPayload.active_company.company_code)}
-                  size={112}
-                />
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[#857F76]">
-                    Código de afiliación de tu empresa
-                  </p>
-                  <p className="mt-1 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-[#181715]">
-                    {createdPayload.active_company.company_code}
-                  </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-center">
+              {/* Card A: Customer WhatsApp Catalog */}
+              <div className="rounded-3xl border-2 border-[#15614B] bg-white p-6 shadow-sm space-y-4 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <span className="inline-flex rounded-full bg-[#E6F5EF] text-[#15614B] px-3 py-1 text-[11px] font-bold">
+                    🛍️ Para tus clientes
+                  </span>
+                  <div className="flex justify-center">
+                    <QrCodeBadge
+                      value={`${window.location.origin}${window.location.pathname}?tienda=${encodeURIComponent(
+                        createdPayload.active_company.company_code
+                      )}`}
+                      size={112}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-base font-bold text-[#181715]">Catálogo con pedido a WhatsApp</p>
+                    <p className="mt-0.5 text-xs text-[#6E685F]">
+                      El cliente elige sus productos, arma el pedido y te llega listo a tu WhatsApp.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = `${window.location.origin}${window.location.pathname}?tienda=${encodeURIComponent(
+                        createdPayload.active_company.company_code
+                      )}`;
+                      navigator.clipboard?.writeText(url);
+                      notify?.('¡Link del catálogo copiado!');
+                    }}
+                    className="btn-secondary rounded-full text-xs py-2 px-3.5"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    Copiar link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const comp = createdPayload.active_company;
+                      const url = `${window.location.origin}${window.location.pathname}?tienda=${encodeURIComponent(
+                        comp.company_code
+                      )}`;
+                      const msg = `¡Hola! 👋 Mira el catálogo de *${comp.name}*, arma tu pedido y envíamelo por aquí:\n${url}`;
+                      window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-[#1DA851] hover:bg-[#178F44] text-white text-xs font-bold px-3.5 py-2 cursor-pointer"
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
+                    Compartir catálogo
+                  </button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={handleCopyCode}
-                  className="btn-secondary rounded-full text-xs py-2 px-4"
-                >
-                  {copied ? (
-                    <>
-                      <Check className="h-3.5 w-3.5 text-[#15614B]" /> Código copiado
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3.5 w-3.5" /> Copiar código
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleShareWhatsApp}
-                  className="btn-secondary rounded-full text-xs py-2 px-4"
-                >
-                  <Share2 className="h-3.5 w-3.5 text-[#15614B]" />
-                  Enviar por WhatsApp
-                </button>
-              </div>
+              {/* Card B: Team Affiliation Code */}
+              <div className="rounded-3xl border border-[#181715] bg-white p-6 shadow-sm space-y-4 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <span className="inline-flex rounded-full bg-[#F3EFE7] text-[#181715] px-3 py-1 text-[11px] font-bold">
+                    👥 Para tu equipo
+                  </span>
+                  <div className="flex justify-center">
+                    <QrCodeBadge
+                      value={buildShareLink(createdPayload.active_company.company_code)}
+                      size={112}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-[#857F76]">
+                      Código de afiliación
+                    </p>
+                    <p className="mt-0.5 font-mono text-2xl font-bold tracking-tight text-[#181715]">
+                      {createdPayload.active_company.company_code}
+                    </p>
+                  </div>
+                </div>
 
-              <p className="text-xs text-[#7A746B]">
-                Siempre encontrarás este código, las solicitudes de afiliación y los interruptores
-                de módulos en <strong className="text-[#181715]">Mi Empresa y Modo</strong>.
-              </p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="btn-secondary rounded-full text-xs py-2 px-3.5"
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-[#15614B]" /> Copiado
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" /> Copiar código
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleShareWhatsApp}
+                    className="btn-secondary rounded-full text-xs py-2 px-3.5"
+                  >
+                    <Share2 className="h-3.5 w-3.5 text-[#15614B]" />
+                    Invitar equipo
+                  </button>
+                </div>
+              </div>
             </div>
 
             <button

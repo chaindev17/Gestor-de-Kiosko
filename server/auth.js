@@ -212,6 +212,12 @@ export function buildSystemBadges(db, companyId, runComplianceAuditFn) {
   const unvalidatedShifts = db
     .prepare(`SELECT COUNT(*) AS cnt FROM shift_sessions WHERE status = 'CERRADO'`)
     .get().cnt;
+  const pendingOrders = db
+    .prepare(`SELECT COUNT(*) AS cnt FROM customer_orders WHERE status IN ('NUEVO', 'PREPARANDO', 'LISTO')`)
+    .get().cnt;
+  const newOrders = db
+    .prepare(`SELECT COUNT(*) AS cnt FROM customer_orders WHERE status = 'NUEVO'`)
+    .get().cnt;
   const activeShift = db
     .prepare(
       `SELECT ss.*, st.name AS shift_name, st.start_time, st.end_time,
@@ -231,6 +237,8 @@ export function buildSystemBadges(db, companyId, runComplianceAuditFn) {
     pending_deposits: Number(pendingDeposits || 0),
     unreconciled_qr: Number(unreconciledQr || 0),
     unvalidated_shifts: Number(unvalidatedShifts || 0),
+    pending_orders: Number(pendingOrders || 0),
+    new_orders: Number(newOrders || 0),
     pending_affiliations: Number(pendingAffiliations || 0),
     active_shift: activeShift || null,
     compliance_score: compliance.score,

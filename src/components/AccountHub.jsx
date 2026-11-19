@@ -18,6 +18,7 @@ export default function AccountHub({
   account,
   memberships = [],
   onSelectCompany,
+  onPreviewCatalog,
   onStartCreateCompany,
   onStartAffiliate,
   onRefreshAccount,
@@ -175,15 +176,27 @@ export default function AccountHub({
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={enteringId === m.company_id}
-                      onClick={() => enter(m.company_id)}
-                      className="btn-pill w-full py-2.5 text-sm"
-                    >
-                      {enteringId === m.company_id ? 'Abriendo panel...' : 'Abrir panel'}
-                      <ArrowRight className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={enteringId === m.company_id}
+                        onClick={() => enter(m.company_id)}
+                        className="btn-pill flex-1 py-2.5 text-sm"
+                      >
+                        {enteringId === m.company_id ? 'Abriendo...' : 'Abrir panel'}
+                        <ArrowRight className="h-4 w-4" />
+                      </button>
+                      {onPreviewCatalog && m.company_code && (
+                        <button
+                          type="button"
+                          onClick={() => onPreviewCatalog(m.company_code)}
+                          className="btn-secondary rounded-full py-2.5 px-3.5 text-xs"
+                          title="Ver catálogo para clientes"
+                        >
+                          Catálogo
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}

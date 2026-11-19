@@ -469,26 +469,93 @@ export function setActiveStaticTenant(storageKey, pendingAffiliations = 0) {
   extraPendingAffiliations = Number(pendingAffiliations || 0);
 }
 
+function ensureCatalogFields(s, isDemoSeed = false) {
+  if (!s.config) return s;
+  if (!s.config.modules) {
+    s.config.modules = {
+      pos: true, catalog: true, ipv: true, warehouse: true, pricing: true,
+      banking: true, onat: true, payroll: true, accounting: true, compliance: true,
+    };
+  } else if (s.config.modules.catalog === undefined) {
+    s.config.modules.catalog = true;
+  }
+  if (!s.config.permissions) {
+    s.config.permissions = {
+      vendedor_manage_orders: true, vendedor_request_restock: true, vendedor_view_pricelist: true, vendedor_open_shift: true,
+      almacenero_create_products: true, almacenero_view_pricelist: true, almacenero_view_compliance: true,
+      economico_edit_prices_directly: true, economico_approve_mermas: true, economico_manage_config: true,
+    };
+  } else if (s.config.permissions.vendedor_manage_orders === undefined) {
+    s.config.permissions.vendedor_manage_orders = true;
+  }
+  if (!s.config.company_code) s.config.company_code = 'kiosko-CEIBA1';
+  if (s.config.whatsapp_phone === undefined) s.config.whatsapp_phone = s.config.transfermovil_phone || '';
+  if (s.config.catalog_enabled === undefined) s.config.catalog_enabled = 1;
+  if (s.config.catalog_welcome === undefined) {
+    s.config.catalog_welcome = 'Armá tu pedido en segundos y envialo directo a nuestro WhatsApp. Te confirmamos al instante.';
+  }
+  if (s.config.catalog_hours === undefined) s.config.catalog_hours = 'Todos los días · 7:00 a 22:00';
+  if (s.config.catalog_allow_pickup === undefined) s.config.catalog_allow_pickup = 1;
+  if (s.config.catalog_allow_delivery === undefined) s.config.catalog_allow_delivery = 1;
+  if (s.config.catalog_delivery_fee_cup === undefined) s.config.catalog_delivery_fee_cup = 150;
+  if (s.config.catalog_free_delivery_from_cup === undefined) s.config.catalog_free_delivery_from_cup = 3000;
+  if (s.config.catalog_min_order_cup === undefined) s.config.catalog_min_order_cup = 0;
+  if (s.config.catalog_show_out_of_stock === undefined) s.config.catalog_show_out_of_stock = 0;
+  if (s.config.catalog_allow_backorder === undefined) s.config.catalog_allow_backorder = 0;
+  if (s.config.catalog_stock_source === undefined) s.config.catalog_stock_source = 'BOTH';
+
+  if (Array.isArray(s.products)) {
+    s.products.forEach((pr, idx) => {
+      if (pr.catalog_visible === undefined) pr.catalog_visible = 1;
+      if (pr.catalog_featured === undefined) pr.catalog_featured = idx < 5 ? 1 : 0;
+      if (pr.catalog_description === undefined) pr.catalog_description = '';
+      if (pr.image_url === undefined) pr.image_url = '';
+    });
+  }
+  if (!Array.isArray(s.customer_orders)) {
+    s.customer_orders = [];
+    if (isDemoSeed && Array.isArray(s.products) && s.products.length >= 2) {
+      const p1 = s.products[0];
+      const p2 = s.products[Math.min(6, s.products.length - 1)];
+      const i1 = r2(p1.sale_price_cup * 2);
+      const i2 = r2(p2.sale_price_cup * 3);
+      const sub = r2(i1 + i2);
+      const del = sub >= 3000 ? 0 : 150;
+      const tot = r2(sub + del);
+      s.customer_orders.push({
+        id: 1,
+        order_code: 'PED-0001',
+        status: 'NUEVO',
+        customer_name: 'Mariana González',
+        customer_phone: '+53 54128890',
+        delivery_mode: 'DOMICILIO',
+        delivery_address: 'Calle 21 #610 apto 3 e/ B y C',
+        payment_method: 'EFECTIVO',
+        cash_tendered_cup: Math.ceil(tot / 500) * 500,
+        notes: 'Tocar timbre del apartamento 3, gracias.',
+        subtotal_cup: sub,
+        discount_cup: 0,
+        delivery_fee_cup: del,
+        total_cup: tot,
+        whatsapp_text: `Pedido PED-0001 — ${tot} CUP`,
+        source: 'CATALOGO',
+        sale_id: null,
+        created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+        items: [
+          { id: 1, product_id: p1.id, product_name: p1.name, unit: p1.unit, quantity: 2, unit_price_cup: p1.sale_price_cup, subtotal_cup: i1 },
+          { id: 2, product_id: p2.id, product_name: p2.name, unit: p2.unit, quantity: 3, unit_price_cup: p2.sale_price_cup, subtotal_cup: i2 },
+        ],
+      });
+    }
+  }
+  return s;
+}
+
 export function loadState(key = activeStorageKey) {
   try {
     const raw = window.localStorage.getItem(key);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed.config && !parsed.config.modules) {
-        parsed.config.modules = {
-          pos: true, ipv: true, warehouse: true, pricing: true,
-          banking: true, onat: true, payroll: true, accounting: true, compliance: true,
-        };
-      }
-      if (parsed.config && !parsed.config.permissions) {
-        parsed.config.permissions = {
-          vendedor_request_restock: true, vendedor_view_pricelist: true, vendedor_open_shift: true,
-          almacenero_create_products: true, almacenero_view_pricelist: true, almacenero_view_compliance: true,
-          economico_edit_prices_directly: true, economico_approve_mermas: true, economico_manage_config: true,
-        };
-      }
-      if (parsed.config && !parsed.config.company_code) parsed.config.company_code = 'kiosko-CEIBA1';
-      return parsed;
+      return ensureCatalogFields(JSON.parse(raw), false);
     }
   } catch {
     // ignore
@@ -498,15 +565,8 @@ export function loadState(key = activeStorageKey) {
   fresh.config.management_preset = 'kiosko_completo';
   fresh.config.business_type = 'Kiosko y Comercio Minorista';
   fresh.config.join_mode = 'APPROVAL';
-  fresh.config.modules = {
-    pos: true, ipv: true, warehouse: true, pricing: true,
-    banking: true, onat: true, payroll: true, accounting: true, compliance: true,
-  };
-  fresh.config.permissions = {
-    vendedor_request_restock: true, vendedor_view_pricelist: true, vendedor_open_shift: true,
-    almacenero_create_products: true, almacenero_view_pricelist: true, almacenero_view_compliance: true,
-    economico_edit_prices_directly: true, economico_approve_mermas: true, economico_manage_config: true,
-  };
+  fresh.config.whatsapp_phone = '+53 53841920';
+  ensureCatalogFields(fresh, true);
   saveState(fresh, key);
   return fresh;
 }
@@ -835,6 +895,8 @@ export function getBadges(s, overrideAffiliations) {
     pending_deposits: s.deposits.filter((d) => d.status === 'PENDIENTE').length,
     unreconciled_qr: s.sales.filter((x) => !x.reconciled && (x.transfermovil_amount_cup > 0 || x.enzona_amount_cup > 0)).length,
     unvalidated_shifts: s.sessions.filter((x) => x.status === 'CERRADO').length,
+    pending_orders: (s.customer_orders || []).filter((o) => ['NUEVO', 'PREPARANDO', 'LISTO'].includes(o.status)).length,
+    new_orders: (s.customer_orders || []).filter((o) => o.status === 'NUEVO').length,
     pending_affiliations: overrideAffiliations !== undefined ? Number(overrideAffiliations) : extraPendingAffiliations,
     active_shift: open ? { ...open, shift_name: st?.name || 'Turno', open_registers: openRegs } : null,
     compliance_score: comp.score,
@@ -1023,8 +1085,17 @@ export function handleStaticApi(method, rawPath, body = {}) {
       active_shift: b ? { ...b.session, registers: b.registers } : null,
       onat: calcOnat(s, per),
       compliance: calcCompliance(s),
+      catalog_summary: {
+        enabled: Boolean(s.config.catalog_enabled ?? 1),
+        whatsapp_phone: s.config.whatsapp_phone || s.config.transfermovil_phone || '',
+        visible_products: s.products.filter((x) => x.active !== 0 && x.catalog_visible !== 0).length,
+        total_orders: (s.customer_orders || []).length,
+      },
       pending_approvals: {
         affiliations_count: extraPendingAffiliations,
+        orders: (s.customer_orders || []).filter((o) => ['NUEVO', 'PREPARANDO', 'LISTO'].includes(o.status)).slice(0, 10),
+        orders_count: (s.customer_orders || []).filter((o) => ['NUEVO', 'PREPARANDO', 'LISTO'].includes(o.status)).length,
+        new_orders_count: (s.customer_orders || []).filter((o) => o.status === 'NUEVO').length,
         mermas: s.movements.filter((m) => m.status === 'PENDIENTE_APROBACION').map((m) => {
           const pr = s.products.find((z) => z.id === m.product_id);
           return { ...m, product_name: pr?.name, unit: pr?.unit };

@@ -1,13 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
-  ArrowUpRight,
+  ArrowRight,
+  Check,
   CheckCircle2,
+  Copy,
+  Eye,
   Landmark,
+  MessageCircle,
   Package,
   RefreshCw,
   Scale,
+  Share2,
   ShoppingBag,
+  ShoppingCart,
   Sliders,
   TrendingUp,
   UserPlus,
@@ -15,12 +21,25 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { formatCup, formatDate, formatDateTime, formatNumber } from '../lib/format.js';
+import {
+  buildCatalogUrl,
+  buildWhatsappUrl,
+  sanitizeWhatsappDigits,
+} from '../lib/whatsapp.js';
 import StatCard from '../components/StatCard.jsx';
 
-export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
+export default function JefeDashboard({
+  onNavigate,
+  onOpenCatalogTab,
+  onPreviewCatalog,
+  onRefreshBadges,
+  notify,
+}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,7 +64,7 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
       notify(
         decision === 'RECHAZAR'
           ? `Merma ${r.doc_number} rechazada.`
-          : `Merma ${r.doc_number} aprobada y contabilizada (${r.journal_entry || 'NCIF'}).`
+          : `Merma ${r.doc_number} aprobada y contabilizada.`
       );
       await load();
       onRefreshBadges?.();
@@ -60,7 +79,7 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
     setBusyAction('restock-all');
     try {
       const r = await api.post('/api/warehouse/restock-requests/fulfill-all', {});
-      notify(`${r.count} producto(s) transferidos automáticamente al mostrador e IPV.`);
+      notify(`${r.count} producto(s) pasados al mostrador.`);
       await load();
       onRefreshBadges?.();
     } catch (err) {
@@ -74,7 +93,7 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
     setBusyAction(`shift-${id}`);
     try {
       const r = await api.post(`/api/pos/shifts/${id}/audit`, {});
-      notify(`Turno ${r.session_code} auditado y validado.`);
+      notify(`Turno ${r.session_code} validado.`);
       await load();
       onRefreshBadges?.();
     } catch (err) {
@@ -85,73 +104,91 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
   }
 
   if (loading && !data) {
-    return <div className="py-12 text-center text-sm text-[#66707D]">Cargando panel ejecutivo...</div>;
+    return <div className="py-16 text-center text-sm text-[#6E685F]">Preparando tu negocio...</div>;
   }
   if (!data) return null;
 
-  const { today_sales, onat, inventory, active_shift, compliance, pending_approvals, automation_feed, top_products } =
-    data;
+  const {
+    today_sales,
+    onat,
+    inventory,
+    active_shift,
+    compliance,
+    pending_approvals,
+    automation_feed,
+    top_products,
+    catalog_summary,
+  } = data;
+
+  const mods = data.config.modules || {};
+  const isOn = (k) => mods[k] !== false;
   const inc = onat.income_statement;
-  const totalPending =
+  const maxCajas = Number(data.config.max_sellers_per_shift || 2);
+  const pendingAffs = Number(pending_approvals.affiliations_count || 0);
+  const pendingOrdersCount = Number(pending_approvals.orders_count || 0);
+  const pendingOrdersList = pending_approvals.orders || [];
+  const totalTasks =
+    pendingOrdersCount +
     pending_approvals.mermas.length +
     pending_approvals.deposits.length +
     pending_approvals.restocks.length +
     pending_approvals.unvalidated_shifts.length;
 
-  const activeModsCount = Object.values(data.config.modules || {}).filter(Boolean).length;
-  const maxCajas = Number(data.config.max_sellers_per_shift || 2);
-  const pendingAffs = Number(pending_approvals.affiliations_count || 0);
+  const companyCode = data.config.company_code || '';
+  const catalogUrl = buildCatalogUrl(companyCode);
+  const waPhone = catalog_summary?.whatsapp_phone || data.config.whatsapp_phone || '';
+  const hasWhatsapp = sanitizeWhatsappDigits(waPhone).length >= 7;
+
+  function copyCatalog() {
+    navigator.clipboard?.writeText(catalogUrl);
+    setCopiedLink(true);
+    notify('¡Link del catálogo copiado! Envíalo por WhatsApp a tus clientes.');
+    setTimeout(() => setCopiedLink(false), 2400);
+  }
+
+  function shareCatalogWhatsapp() {
+    const msg = `¡Hola! 👋 Mira el catálogo actualizado de *${data.config.business_name}*, arma tu pedido y envíamelo por aquí:\n${catalogUrl}`;
+    window.open(buildWhatsappUrl('', msg), '_blank', 'noopener,noreferrer');
+  }
 
   return (
     <div className="space-y-6">
-      {/* Editorial Page Header */}
+      {/* Clean Welcoming Header */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="kicker">
-            {data.config.business_type || 'Comercio'} · Jornada {formatDate(data.today)}
-          </p>
+          <p className="kicker">Hoy · {formatDate(data.today)}</p>
           <h1 className="mt-1 font-editorial text-3xl sm:text-4xl text-[#181715]">
             {data.config.business_name}
           </h1>
-          <p className="text-xs text-[#6E685F] mt-1">
-            {data.config.legal_form === 'MIPYME' ? 'Micro-MIPYME (DL 88/2024)' : 'TCP (DL 90/2024)'}
-            {data.config.company_code ? (
-              <>
-                {' '}
-                · Código de afiliación:{' '}
-                <strong className="font-mono text-[#181715]">{data.config.company_code}</strong>
-              </>
-            ) : null}{' '}
-            · {activeModsCount} módulos activos
+          <p className="mt-1 text-xs text-[#6E685F]">
+            {active_shift
+              ? `● ${active_shift.shift_name} abierto (${active_shift.registers?.filter((r) => r.status === 'ABIERTA').length || 0} caja activa)`
+              : '○ Sin turno abierto todavía'}
+            {companyCode ? ` · Código ${companyCode}` : ''}
           </p>
         </div>
+
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary rounded-full text-xs">
+          <button
+            type="button"
+            onClick={load}
+            className="btn-secondary rounded-full text-xs py-2 px-3.5"
+          >
             <RefreshCw className="h-3.5 w-3.5" />
             Actualizar
           </button>
           <button
             type="button"
             onClick={() => onNavigate('workspace-settings')}
-            className="btn-primary rounded-full text-xs"
+            className="btn-secondary rounded-full text-xs py-2 px-3.5"
           >
             <Sliders className="h-3.5 w-3.5" />
-            Configurar empresa y afiliados
+            Personalizar
           </button>
-          {data.config.modules?.compliance !== false && (
-            <button
-              type="button"
-              onClick={() => onNavigate('compliance')}
-              className="btn-secondary rounded-full text-xs"
-            >
-              <Scale className="h-3.5 w-3.5" />
-              Inspección
-            </button>
-          )}
         </div>
       </div>
 
-      {/* Pending email affiliation alert banner */}
+      {/* Urgent Affiliation Alert (when an employee entered your company code) */}
       {pendingAffs > 0 && (
         <div className="rounded-2xl border border-[#C2542D]/35 bg-[#FBEEE8] px-5 py-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -160,10 +197,10 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
             </span>
             <div>
               <p className="text-sm font-bold text-[#181715]">
-                Tienes {pendingAffs} solicitud(es) de afiliación por correo esperando tu aprobación
+                {pendingAffs} persona(s) pidieron sumarse a tu equipo
               </p>
               <p className="text-xs text-[#6E493B]">
-                Revisa quién ingresó tu código <span className="font-mono">{data.config.company_code}</span> y asígnale su puesto y turno.
+                Revisa su correo y asígnales su puesto y turno en un clic.
               </p>
             </div>
           </div>
@@ -172,132 +209,443 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
             onClick={() => onNavigate('workspace-settings')}
             className="btn-primary rounded-full text-xs"
           >
-            Revisar y aprobar →
+            Aprobar ahora →
           </button>
         </div>
       )}
 
-      {/* Top 4 KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      {/* ================================================================= */}
+      {/* SUPER-INTUITIVE 4-CARD QUICK LAUNCHPAD ("¿Qué quieres hacer?")    */}
+      {/* ================================================================= */}
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <button
+          type="button"
+          onClick={() => onNavigate('pos')}
+          className="group rounded-2xl bg-[#181715] text-[#FAF8F4] p-4 text-left flex flex-col justify-between gap-3 hover:bg-[#2B2925] transition cursor-pointer shadow-xs"
+        >
+          <div className="flex items-center justify-between">
+            <span className="h-10 w-10 rounded-xl bg-white/12 flex items-center justify-center">
+              <ShoppingCart className="h-5 w-5 text-white" />
+            </span>
+            <ArrowRight className="h-4 w-4 text-white/60 group-hover:translate-x-0.5 transition" />
+          </div>
+          <div>
+            <p className="text-sm font-bold">Cobrar venta</p>
+            <p className="text-[11px] text-[#C8C2B7]">Efectivo, QR o mixto</p>
+          </div>
+        </button>
+
+        {isOn('catalog') && (
+          <button
+            type="button"
+            onClick={() => onNavigate('catalog-wa')}
+            className="group rounded-2xl bg-[#E6F5EF] border border-[#BDE5D5] text-[#181715] p-4 text-left flex flex-col justify-between gap-3 hover:bg-[#D8EFE6] transition cursor-pointer"
+          >
+            <div className="flex items-center justify-between">
+              <span className="h-10 w-10 rounded-xl bg-[#1DA851] text-white flex items-center justify-center">
+                <MessageCircle className="h-5 w-5" />
+              </span>
+              {pendingOrdersCount > 0 ? (
+                <span className="rounded-full bg-[#1DA851] text-white px-2.5 py-0.5 text-[11px] font-extrabold">
+                  {pendingOrdersCount} {pendingOrdersCount === 1 ? 'pedido' : 'pedidos'}
+                </span>
+              ) : (
+                <ArrowRight className="h-4 w-4 text-[#15614B] group-hover:translate-x-0.5 transition" />
+              )}
+            </div>
+            <div>
+              <p className="text-sm font-bold text-[#113D2F]">Catálogo WhatsApp</p>
+              <p className="text-[11px] text-[#286350]">
+                {pendingOrdersCount > 0
+                  ? `${pendingOrdersCount} por atender ahora`
+                  : `${catalog_summary?.visible_products || 0} productos publicados`}
+              </p>
+            </div>
+          </button>
+        )}
+
+        {isOn('warehouse') && (
+          <button
+            type="button"
+            onClick={() => onNavigate('warehouse')}
+            className="group rounded-2xl bg-white border border-[#E7E1D6] p-4 text-left flex flex-col justify-between gap-3 hover:border-[#C2B8A6] transition cursor-pointer"
+          >
+            <div className="flex items-center justify-between">
+              <span className="h-10 w-10 rounded-xl bg-[#F3EFE7] text-[#181715] flex items-center justify-center">
+                <Package className="h-5 w-5" />
+              </span>
+              {inventory.low_kiosk_count > 0 ? (
+                <span className="rounded-full bg-[#FCECE6] text-[#B5421E] px-2 py-0.5 text-[10px] font-bold">
+                  {inventory.low_kiosk_count} bajo mín.
+                </span>
+              ) : (
+                <ArrowRight className="h-4 w-4 text-[#8A8379] group-hover:translate-x-0.5 transition" />
+              )}
+            </div>
+            <div>
+              <p className="text-sm font-bold text-[#181715]">Productos y stock</p>
+              <p className="text-[11px] text-[#6E685F]">
+                {inventory.total_products} artículos cargados
+              </p>
+            </div>
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={() => onNavigate('workspace-settings')}
+          className="group rounded-2xl bg-white border border-[#E7E1D6] p-4 text-left flex flex-col justify-between gap-3 hover:border-[#C2B8A6] transition cursor-pointer"
+        >
+          <div className="flex items-center justify-between">
+            <span className="h-10 w-10 rounded-xl bg-[#F3EFE7] text-[#181715] flex items-center justify-center">
+              <UserPlus className="h-5 w-5" />
+            </span>
+            <ArrowRight className="h-4 w-4 text-[#8A8379] group-hover:translate-x-0.5 transition" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-[#181715]">Equipo y código</p>
+            <p className="text-[11px] text-[#6E685F] font-mono truncate">
+              {companyCode || 'Invitar empleados'}
+            </p>
+          </div>
+        </button>
+      </section>
+
+      {/* ================================================================= */}
+      {/* READY-TO-SHARE CUSTOMER CATALOG STRIP                             */}
+      {/* ================================================================= */}
+      {isOn('catalog') && (
+        <section className="rounded-2xl bg-white border border-[#E7E1D6] p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0 space-y-0.5">
+            <p className="text-sm font-bold text-[#181715]">
+              Tu catálogo para clientes está listo para compartir
+            </p>
+            <p className="text-xs text-[#6E685F]">
+              {hasWhatsapp ? (
+                <>
+                  Los clientes arman su pedido y te llega armado al WhatsApp{' '}
+                  <strong className="text-[#15614B]">{waPhone}</strong>.
+                </>
+              ) : (
+                <>
+                  Agrega tu número de WhatsApp para recibir cada pedido listo en tu celular.{' '}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenCatalogTab ? onOpenCatalogTab('settings') : onNavigate('catalog-wa')
+                    }
+                    className="font-bold text-[#C2542D] underline cursor-pointer"
+                  >
+                    Cargar mi WhatsApp →
+                  </button>
+                </>
+              )}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {onPreviewCatalog && (
+              <button
+                type="button"
+                onClick={() => onPreviewCatalog(companyCode)}
+                className="btn-secondary rounded-full text-xs py-2 px-3.5"
+              >
+                <Eye className="h-3.5 w-3.5" />
+                Probar catálogo
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={copyCatalog}
+              className="btn-secondary rounded-full text-xs py-2 px-3.5"
+            >
+              {copiedLink ? <Check className="h-3.5 w-3.5 text-[#15614B]" /> : <Copy className="h-3.5 w-3.5" />}
+              {copiedLink ? '¡Copiado!' : 'Copiar link'}
+            </button>
+            <button
+              type="button"
+              onClick={shareCatalogWhatsapp}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[#1DA851] hover:bg-[#178F44] text-white text-xs font-bold px-4 py-2 transition cursor-pointer"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              Enviar por WhatsApp
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* ================================================================= */}
+      {/* 4 CRYSTAL-CLEAR KEY NUMBERS                                       */}
+      {/* ================================================================= */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
         <StatCard
-          label="Ventas de Hoy"
+          label="Vendido hoy"
           value={formatCup(today_sales.total_cup)}
-          hint={`${today_sales.tickets} comprobantes · ${today_sales.electronic_pct}% cobro QR (Transfermóvil/EnZona)`}
+          hint={`${today_sales.tickets} ventas · ${today_sales.electronic_pct}% por QR`}
           icon={ShoppingBag}
           tone="brand"
         />
         <StatCard
-          label={`Utilidad Neta (${data.period})`}
+          label="Ganancia del mes"
           value={formatCup(inc.net_profit_cup)}
-          hint={`Ventas mes ${formatCup(inc.gross_sales_cup, 0)} · Tributos ONAT ${formatCup(onat.totals.total_onat_cup, 0)}`}
+          hint={`Ventas mes: ${formatCup(inc.gross_sales_cup, 0)}`}
           icon={TrendingUp}
           tone={inc.net_profit_cup >= 0 ? 'brand' : 'red'}
         />
         <StatCard
-          label="Cuenta Bancaria Fiscal"
+          label="Dinero en banco"
           value={formatCup(data.bank_balance_cup)}
-          hint={`${data.config.bank_name} · ${data.config.fiscal_account_cup}`}
+          hint={data.config.bank_name}
           icon={Landmark}
           tone="navy"
         />
         <StatCard
-          label="Inventario Valorizado"
+          label="Mercadería en stock"
           value={formatCup(inventory.total_cost_cup)}
-          hint={`Almacén ${formatCup(inventory.warehouse_cost_cup, 0)} · Kiosko ${formatCup(inventory.kiosk_cost_cup, 0)} (${inventory.low_kiosk_count} bajo mín.)`}
+          hint={
+            inventory.low_kiosk_count > 0
+              ? `${inventory.low_kiosk_count} producto(s) por reponer`
+              : `${inventory.total_products} productos al día`
+          }
           icon={Package}
           tone={inventory.low_kiosk_count > 0 ? 'amber' : 'default'}
         />
       </div>
 
-      {/* Live 2-Seller Shift Monitor + Pending Approvals */}
+      {/* ================================================================= */}
+      {/* PENDING TASKS (1-CLICK) + LIVE SHIFT REGISTERS                    */}
+      {/* ================================================================= */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <section className="card p-5 lg:col-span-7 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-bold text-[#181715]">
-                Monitor de Turno en Vivo ({maxCajas} {maxCajas === 1 ? 'Caja' : 'Cajas'} por Turno)
-              </h2>
-              <p className="text-xs text-[#66707D]">
-                {active_shift
-                  ? `${active_shift.shift_name} (${active_shift.start_time}–${active_shift.end_time}) · Código ${active_shift.session_code}`
-                  : 'Actualmente no hay un turno abierto en mostrador'}
+        {/* Pending items — Orders, Restocks, Mermas, Shifts */}
+        <section className="card p-5 lg:col-span-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold text-[#181715]">Para atender ahora</h2>
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
+                totalTasks > 0
+                  ? 'bg-[#FCECE6] text-[#B5421E]'
+                  : 'bg-[#E6F5EF] text-[#15614B]'
+              }`}
+            >
+              {totalTasks === 0 ? 'Todo al día ✓' : `${totalTasks} pendiente(s)`}
+            </span>
+          </div>
+
+          {totalTasks === 0 ? (
+            <div className="rounded-2xl border border-dashed border-[#E2DCD0] p-7 text-center space-y-1">
+              <CheckCircle2 className="h-7 w-7 text-[#15614B] mx-auto" />
+              <p className="text-sm font-semibold text-[#181715]">Nada pendiente por resolver</p>
+              <p className="text-xs text-[#6E685F]">
+                Los pedidos de WhatsApp, reposiciones y cierres aparecerán aquí.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('shift-ipv')}
-              className="text-xs font-semibold text-[#0F5C4D] hover:underline inline-flex items-center gap-1 cursor-pointer"
-            >
-              Ver IPV y arqueos <ArrowUpRight className="h-3.5 w-3.5" />
-            </button>
+          ) : (
+            <div className="space-y-2.5">
+              {/* Incoming WhatsApp Orders */}
+              {pendingOrdersList.slice(0, 3).map((ord) => (
+                <div
+                  key={ord.id}
+                  className="rounded-2xl border border-[#BDE5D5] bg-[#E6F5EF]/60 p-3.5 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#113D2F] truncate">
+                      💬 Pedido {ord.order_code} · {ord.customer_name}
+                    </p>
+                    <p className="text-[11px] text-[#286350]">
+                      {ord.delivery_mode === 'DOMICILIO' ? '🛵 Domicilio' : '🏪 Retiro'} ·{' '}
+                      <strong>{formatCup(ord.total_cup)}</strong> ({ord.status.toLowerCase()})
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('catalog-wa')}
+                    className="shrink-0 rounded-full bg-[#15614B] text-white px-3 py-1.5 text-[11px] font-bold hover:bg-[#104B3A] cursor-pointer"
+                  >
+                    Atender
+                  </button>
+                </div>
+              ))}
+
+              {/* Restocks */}
+              {pending_approvals.restocks.length > 0 && (
+                <div className="rounded-2xl border border-[#E7E1D6] bg-[#FAF8F4] p-3.5 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-[#181715]">
+                      📦 {pending_approvals.restocks.length} producto(s) bajos en mostrador
+                    </p>
+                    <p className="text-[11px] text-[#6E685F]">
+                      Pásalos del almacén al mostrador en un clic.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busyAction === 'restock-all'}
+                    onClick={dispatchAllRestocks}
+                    className="shrink-0 btn-primary rounded-full text-[11px] py-1.5 px-3.5"
+                  >
+                    Reponer
+                  </button>
+                </div>
+              )}
+
+              {/* Mermas */}
+              {pending_approvals.mermas.map((m) => (
+                <div
+                  key={m.id}
+                  className="rounded-2xl border border-[#E7E1D6] bg-[#FAF8F4] p-3.5 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#181715] truncate">
+                      Baja por merma: {formatNumber(m.quantity)} {m.unit} de {m.product_name}
+                    </p>
+                    <p className="text-[11px] text-[#6E685F] truncate">{m.reason}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      disabled={busyAction === `merma-${m.id}`}
+                      onClick={() => decideMerma(m.id, 'APROBAR')}
+                      className="btn-primary rounded-full text-[11px] py-1 px-3"
+                    >
+                      Aprobar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyAction === `merma-${m.id}`}
+                      onClick={() => decideMerma(m.id, 'RECHAZAR')}
+                      className="btn-secondary rounded-full text-[11px] py-1 px-2.5"
+                    >
+                      No
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Unvalidated closed shifts */}
+              {pending_approvals.unvalidated_shifts.map((s) => (
+                <div
+                  key={s.id}
+                  className="rounded-2xl border border-[#E7E1D6] bg-[#FAF8F4] p-3.5 flex items-center justify-between gap-3"
+                >
+                  <div>
+                    <p className="text-xs font-bold text-[#181715]">
+                      Turno cerrado {s.session_code} por validar
+                    </p>
+                    <p className="text-[11px] text-[#6E685F]">
+                      Vendido: {formatCup(s.total_sales_cup)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busyAction === `shift-${s.id}`}
+                    onClick={() => auditShift(s.id)}
+                    className="btn-secondary rounded-full text-[11px] py-1.5 px-3"
+                  >
+                    Validar
+                  </button>
+                </div>
+              ))}
+
+              {/* Pending bank deposits */}
+              {pending_approvals.deposits.length > 0 && isOn('banking') && (
+                <div className="rounded-2xl border border-[#E7E1D6] bg-[#FAF8F4] p-3.5 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-[#181715]">
+                      🏦 {pending_approvals.deposits.length} depósito(s) al banco pendiente(s)
+                    </p>
+                    <p className="text-[11px] text-[#6E685F]">
+                      Efectivo recaudado listo para depositar.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('banking')}
+                    className="btn-secondary rounded-full text-[11px] py-1.5 px-3"
+                  >
+                    Ver
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Live Counter / Registers */}
+        <section className="card p-5 lg:col-span-6 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-[#181715]">Cajas en mostrador</h2>
+              <p className="text-xs text-[#6E685F]">
+                {active_shift
+                  ? `${active_shift.shift_name} (${active_shift.start_time}–${active_shift.end_time})`
+                  : 'Abre una caja para empezar a cobrar'}
+              </p>
+            </div>
+            {isOn('ipv') && (
+              <button
+                type="button"
+                onClick={() => onNavigate('shift-ipv')}
+                className="btn-secondary rounded-full text-xs py-1.5 px-3"
+              >
+                Ver turno
+              </button>
+            )}
           </div>
 
           {active_shift ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {[1, 2].map((regNum) => {
-                const reg = active_shift.registers.find((r) => r.register_number === regNum);
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {Array.from({ length: Math.min(maxCajas, 4) }, (_, idx) => idx + 1).map((regNum) => {
+                const reg = active_shift.registers?.find((r) => r.register_number === regNum);
                 if (!reg) {
                   return (
                     <div
                       key={regNum}
-                      className="rounded-xl border border-dashed border-[#D5D0C4] bg-[#FAF9F5] p-4 flex flex-col justify-between"
+                      className="rounded-2xl border border-dashed border-[#DDD6C8] p-4 flex flex-col justify-between text-xs text-[#8A8379]"
                     >
                       <div>
-                        <span className="text-xs font-semibold text-[#66707D]">Caja {regNum} — Disponible</span>
-                        <p className="mt-1 text-xs text-[#7B8491]">
-                          Pendiente de incorporación del segundo vendedor del turno.
-                        </p>
+                        <p className="font-bold text-[#4A463F]">Caja {regNum}</p>
+                        <p className="mt-0.5">Libre en este turno</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => onNavigate('shift-ipv')}
-                        className="mt-3 btn-secondary text-xs py-1.5"
-                      >
-                        Asignar vendedor
-                      </button>
+                      {isOn('ipv') && (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('shift-ipv')}
+                          className="mt-3 btn-secondary rounded-full text-[11px] py-1 px-3 self-start"
+                        >
+                          Abrir Caja {regNum}
+                        </button>
+                      )}
                     </div>
                   );
                 }
+                const qrTotal =
+                  Number(reg.transfermovil_sales_cup || 0) + Number(reg.enzona_sales_cup || 0);
                 return (
-                  <div key={regNum} className="rounded-xl border border-[#E3DFD5] bg-[#FAF9F5] p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold uppercase tracking-wide text-[#0F5C4D]">
+                  <div
+                    key={regNum}
+                    className="rounded-2xl border border-[#E7E1D6] bg-[#FAF8F4] p-4 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-[#15614B]">
                         Caja {reg.register_number}
                       </span>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          reg.status === 'ABIERTA'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-stone-200 text-stone-700'
-                        }`}
-                      >
+                      <span className="rounded-full bg-[#E6F5EF] text-[#15614B] px-2 py-0.5 text-[10px] font-bold">
                         {reg.status}
                       </span>
                     </div>
                     <div>
-                      <p className="text-sm font-semibold text-[#171C22]">{reg.seller_name}</p>
-                      <p className="text-xs text-[#66707D]">{reg.sales_count} ventas realizadas</p>
+                      <p className="text-sm font-bold text-[#181715] truncate">{reg.seller_name}</p>
+                      <p className="text-[11px] text-[#6E685F]">{reg.sales_count} ventas</p>
                     </div>
-                    <div className="pt-2 border-t border-[#E6E2D8] space-y-1 text-xs tabular-nums">
-                      <div className="flex justify-between font-bold text-[#171C22] text-sm">
-                        <span>Total vendido</span>
+                    <div className="pt-2 border-t border-[#E7E1D6] space-y-1 text-xs tabular-nums">
+                      <div className="flex justify-between font-extrabold text-[#181715]">
+                        <span>Vendido</span>
                         <span>{formatCup(reg.total_sales_cup)}</span>
                       </div>
-                      <div className="flex justify-between text-[#525B68]">
-                        <span>Efectivo CUP</span>
-                        <span>{formatCup(reg.cash_sales_cup)}</span>
-                      </div>
-                      <div className="flex justify-between text-[#525B68]">
-                        <span>Transfermóvil QR</span>
-                        <span>{formatCup(reg.transfermovil_sales_cup)}</span>
-                      </div>
-                      <div className="flex justify-between text-[#525B68]">
-                        <span>EnZona QR</span>
-                        <span>{formatCup(reg.enzona_sales_cup)}</span>
-                      </div>
-                      <div className="flex justify-between text-[#0F5C4D] font-medium pt-1">
-                        <span>Esperado en gaveta</span>
-                        <span>{formatCup(reg.expected_cash_cup)}</span>
+                      <div className="flex justify-between text-[#6E685F]">
+                        <span>Efectivo / QR</span>
+                        <span>
+                          {formatCup(reg.cash_sales_cup, 0)} / {formatCup(qrTotal, 0)}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -305,261 +653,118 @@ export default function JefeDashboard({ onNavigate, onRefreshBadges, notify }) {
               })}
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-[#D5D0C4] p-6 text-center">
-              <p className="text-sm text-[#525B68]">Ningún turno está abierto en este momento.</p>
+            <div className="rounded-2xl border border-dashed border-[#DDD6C8] p-7 text-center space-y-3">
+              <p className="text-sm text-[#5E584F]">Todavía no hay una caja abierta hoy.</p>
               <button
                 type="button"
-                onClick={() => onNavigate('shift-ipv')}
-                className="mt-3 btn-primary text-xs"
+                onClick={() => onNavigate('pos')}
+                className="btn-primary rounded-full text-xs py-2 px-5"
               >
-                Abrir nuevo turno
+                Ir a cobrar y abrir caja
               </button>
             </div>
           )}
-
-          {/* Top Products */}
-          <div className="pt-2 border-t border-[#ECE8DE]">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[#66707D] mb-2.5">
-              Productos de mayor facturación ({data.period})
-            </h3>
-            <div className="space-y-1.5">
-              {top_products.map((tp) => (
-                <div
-                  key={tp.product_id}
-                  className="flex items-center justify-between gap-2 text-xs py-1 border-b border-[#F2F0E9] last:border-0"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="truncate font-medium text-[#171C22]">{tp.product_name}</span>
-                    {tp.is_price_capped ? (
-                      <span className="shrink-0 rounded bg-amber-50 border border-amber-200 px-1.5 py-0.2 text-[10px] font-medium text-amber-800">
-                        Topado MFP
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="shrink-0 text-right tabular-nums">
-                    <span className="text-[#66707D] mr-3">
-                      {formatNumber(tp.qty_sold)} {tp.unit}
-                    </span>
-                    <span className="font-semibold text-[#171C22]">{formatCup(tp.revenue_cup)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
         </section>
+      </div>
 
-        {/* Action Queue */}
-        <section className="card p-5 lg:col-span-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-bold text-[#171C22]">Decisiones y Tareas Automatizadas</h2>
-              <p className="text-xs text-[#66707D]">Controles que requieren firma o ejecución</p>
-            </div>
-            <span className="rounded-full bg-[#F3F1EB] px-2.5 py-0.5 text-xs font-bold text-[#171C22] tabular-nums">
-              {totalPending}
-            </span>
-          </div>
+      {/* Progressive Disclosure: Toggle detailed Fiscal / Legal / Automation view */}
+      <div className="pt-1">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="text-xs font-bold text-[#5E584F] hover:text-[#181715] inline-flex items-center gap-1.5 cursor-pointer"
+        >
+          <span>{showAdvanced ? '▾ Ocultar detalle de productos, impuestos y actividad' : '▸ Ver más vendidos, impuestos y actividad automática'}</span>
+        </button>
+      </div>
 
-          {totalPending === 0 ? (
-            <div className="rounded-xl bg-emerald-50/70 border border-emerald-200 p-5 text-center space-y-1">
-              <CheckCircle2 className="h-6 w-6 text-emerald-700 mx-auto" />
-              <p className="text-sm font-semibold text-emerald-900">Todo al día</p>
-              <p className="text-xs text-emerald-800">
-                No hay mermas, reabastecimientos ni depósitos pendientes de aprobación.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {/* Auto restocks */}
-              {pending_approvals.restocks.length > 0 && (
-                <div className="rounded-lg border border-[#E3DFD5] bg-[#FAF9F5] p-3.5 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-[#8A4B08]">
-                      Reabastecimiento automático ({pending_approvals.restocks.length})
+      {showAdvanced && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Top products */}
+          <section className="card p-5 lg:col-span-5 space-y-3">
+            <h3 className="text-sm font-bold text-[#181715]">Lo más vendido del mes</h3>
+            {top_products?.length ? (
+              <div className="divide-y divide-[#F3EFE7] text-xs">
+                {top_products.slice(0, 6).map((p, idx) => (
+                  <div key={p.id || idx} className="py-2.5 flex items-center justify-between gap-2">
+                    <span className="truncate font-medium text-[#181715]">
+                      {idx + 1}. {p.name}
                     </span>
-                    <button
-                      type="button"
-                      disabled={busyAction === 'restock-all'}
-                      onClick={dispatchAllRestocks}
-                      className="btn-primary text-[11px] py-1 px-2.5"
-                    >
-                      Despachar todo (SC-2-09)
-                    </button>
+                    <span className="shrink-0 font-bold tabular-nums text-[#15614B]">
+                      {formatCup(p.revenue_cup, 0)}
+                    </span>
                   </div>
-                  <ul className="space-y-1 text-xs text-[#4C5561]">
-                    {pending_approvals.restocks.slice(0, 4).map((r) => (
-                      <li key={r.id} className="flex justify-between gap-2 tabular-nums">
-                        <span className="truncate">{r.product_name}</span>
-                        <span className="shrink-0 font-medium">
-                          +{r.suggested_qty} {r.unit} (quedan {r.kiosk_stock})
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-[#6E685F]">Tus primeras ventas aparecerán aquí.</p>
+            )}
+          </section>
+
+          {/* Tax & Compliance snapshot */}
+          <section className="card p-5 lg:col-span-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-[#181715]">Impuestos y cumplimiento</h3>
+              {isOn('compliance') && (
+                <span className="rounded-full bg-[#E6F5EF] text-[#15614B] px-2 py-0.5 text-[11px] font-bold">
+                  {compliance.score}% OK
+                </span>
               )}
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-[#6E685F]">Ventas del mes</span>
+                <strong className="tabular-nums">{formatCup(inc.gross_sales_cup)}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#6E685F]">Tributos estimados (ONAT)</span>
+                <strong className="tabular-nums">{formatCup(onat.totals.total_onat_cup)}</strong>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-[#F3EFE7]">
+                <span className="font-bold text-[#181715]">Utilidad neta</span>
+                <strong className="tabular-nums text-[#15614B]">{formatCup(inc.net_profit_cup)}</strong>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              {isOn('onat') && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('onat')}
+                  className="btn-secondary rounded-full text-[11px] py-1.5 px-3"
+                >
+                  Ver ONAT
+                </button>
+              )}
+              {isOn('compliance') && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('compliance')}
+                  className="btn-secondary rounded-full text-[11px] py-1.5 px-3"
+                >
+                  <Scale className="h-3 w-3" />
+                  Carpeta de Inspección
+                </button>
+              )}
+            </div>
+          </section>
 
-              {/* Pending Mermas SC-2-16 */}
-              {pending_approvals.mermas.map((m) => (
-                <div key={m.id} className="rounded-lg border border-amber-200 bg-amber-50/50 p-3.5 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-amber-900">Acta de Merma {m.doc_number}</span>
-                    <span className="font-semibold text-amber-900 tabular-nums">
-                      {formatCup(m.total_cost_cup)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-[#3C4450]">
-                    <strong>
-                      {m.quantity} {m.unit}
-                    </strong>{' '}
-                    de {m.product_name} — {m.reason}
-                  </p>
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      disabled={busyAction === `merma-${m.id}`}
-                      onClick={() => decideMerma(m.id, 'APROBAR')}
-                      className="btn-primary text-[11px] py-1 px-2.5"
-                    >
-                      Aprobar y contabilizar
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busyAction === `merma-${m.id}`}
-                      onClick={() => decideMerma(m.id, 'RECHAZAR')}
-                      className="btn-secondary text-[11px] py-1 px-2.5"
-                    >
-                      Rechazar
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              {/* Pending BCC Bank Deposits */}
-              {pending_approvals.deposits.map((d) => (
-                <div key={d.id} className="rounded-lg border border-[#D4DEE9] bg-[#F4F7FA] p-3.5 space-y-1.5">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-[#1E3A5F]">
-                      Depósito BCC {d.order_number} (Res. 111/2023)
-                    </span>
-                    <span className="font-bold text-[#1E3A5F] tabular-nums">{formatCup(d.amount_cup)}</span>
-                  </div>
-                  <p className="text-xs text-[#4C5561]">
-                    Límite bancario: <strong>{formatDate(d.due_date)}</strong>
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('banking')}
-                    className="btn-secondary text-[11px] py-1 px-2.5 mt-1"
-                  >
-                    Registrar voucher de banco
-                  </button>
-                </div>
-              ))}
-
-              {/* Unvalidated shifts */}
-              {pending_approvals.unvalidated_shifts.map((s) => (
-                <div key={s.id} className="rounded-lg border border-[#E3DFD5] bg-white p-3.5 space-y-1.5">
-                  <div className="flex justify-between text-xs font-semibold">
-                    <span>Auditoría pendiente: {s.session_code}</span>
-                    <span className="tabular-nums">{formatCup(s.total_sales_cup)}</span>
-                  </div>
-                  <p className="text-xs text-[#66707D]">
-                    Diferencia en arqueo: {formatCup(s.total_diff_cup)}
-                  </p>
-                  <button
-                    type="button"
-                    disabled={busyAction === `shift-${s.id}`}
-                    onClick={() => auditShift(s.id)}
-                    className="btn-primary text-[11px] py-1 px-2.5"
-                  >
-                    Validar cierre de turno
-                  </button>
+          {/* Recent Automation Feed */}
+          <section className="card p-5 lg:col-span-3 space-y-3">
+            <h3 className="text-sm font-bold text-[#181715] flex items-center gap-1.5">
+              <Zap className="h-4 w-4 text-[#C2542D]" />
+              Actividad reciente
+            </h3>
+            <div className="space-y-2.5 max-h-56 overflow-y-auto text-xs">
+              {(automation_feed || []).slice(0, 6).map((ev) => (
+                <div key={ev.id} className="border-b border-[#F3EFE7] pb-2 last:border-0">
+                  <p className="font-semibold text-[#181715] leading-snug">{ev.title}</p>
+                  <p className="text-[10px] text-[#8A8379] mt-0.5">{formatDateTime(ev.created_at)}</p>
                 </div>
               ))}
             </div>
-          )}
-        </section>
-      </div>
-
-      {/* Cuban Legal Semaphore + Live Automation Log */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <section className="card p-5 lg:col-span-6 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-bold text-[#171C22]">
-                Semáforo de Leyes Económicas Cubanas ({compliance.score}%)
-              </h2>
-              <p className="text-xs text-[#66707D]">
-                {compliance.ok_count} en regla · {compliance.warning_count} atención · {compliance.critical_count} crítico
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('compliance')}
-              className="text-xs font-semibold text-[#0F5C4D] hover:underline cursor-pointer"
-            >
-              Detalle legal
-            </button>
-          </div>
-          <div className="divide-y divide-[#EFECE4] max-h-72 overflow-y-auto">
-            {compliance.checks.map((ch) => (
-              <div key={ch.code} className="py-2.5 flex items-start gap-2.5">
-                {ch.status === 'OK' ? (
-                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 mt-0.5" />
-                ) : (
-                  <AlertTriangle
-                    className={`h-4 w-4 shrink-0 mt-0.5 ${
-                      ch.status === 'CRITICO' ? 'text-red-600' : 'text-amber-600'
-                    }`}
-                  />
-                )}
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-[#171C22]">
-                    {ch.title}{' '}
-                    <span className="font-normal text-[#6F7885]">({ch.authority})</span>
-                  </p>
-                  <p className="text-[11px] text-[#58616E] leading-snug mt-0.5">{ch.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="card p-5 lg:col-span-6 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-[#0F5C4D]" />
-              <div>
-                <h2 className="text-sm font-bold text-[#171C22]">Motor Automatizado en Acción</h2>
-                <p className="text-xs text-[#66707D]">Procesos ejecutados sin intervención manual</p>
-              </div>
-            </div>
-          </div>
-          <div className="divide-y divide-[#EFECE4] max-h-72 overflow-y-auto">
-            {automation_feed.map((ev) => (
-              <div key={ev.id} className="py-2.5 space-y-0.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-[#171C22]">{ev.title}</span>
-                  <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                      ev.severity === 'BLOQUEO'
-                        ? 'bg-red-100 text-red-800'
-                        : ev.severity === 'ALERTA'
-                        ? 'bg-amber-100 text-amber-800'
-                        : 'bg-[#F1EFE8] text-[#4C5561]'
-                    }`}
-                  >
-                    {ev.category}
-                  </span>
-                </div>
-                <p className="text-[11px] text-[#58616E] leading-snug">{ev.detail}</p>
-                <p className="text-[10px] text-[#87909D]">{formatDateTime(ev.created_at)}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

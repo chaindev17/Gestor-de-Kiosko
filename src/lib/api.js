@@ -8,6 +8,10 @@ try {
   sessionToken = null;
 }
 
+export function isStaticBackend() {
+  return backendMode === 'static';
+}
+
 export function setSessionToken(token) {
   sessionToken = token || null;
   try {

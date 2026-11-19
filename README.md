@@ -4,6 +4,12 @@ Plataforma web integral de gestión automatizada para kioskos y comercios minori
 
 ## Novedades principales
 
+- **Catálogo público con pedido directo a tu WhatsApp (`?tienda=kiosko-XXXXXX`)**:
+  - Cada empresa cuenta con su link público y cartel QR imprimible para mostrador o redes sociales.
+  - Tus clientes entran sin registrarse, filtran por categorías o destacados, arman su carrito, eligen **retiro en local** o **envío a domicilio** (con cálculo automático de envío gratis), indican cómo pagan (efectivo con cálculo exacto de vuelto o QR con bonificación) y envían el pedido perfectamente redactado directo a tu **WhatsApp**.
+  - En tu panel **Catálogo WhatsApp** respondes al cliente en 1 clic, cambias el estado (*Nuevo → Preparando → Listo → Entregado*) y cobras descontando inventario y generando asiento contable con un solo toque.
+- **Interfaz extremadamente intuitiva y adaptable al celular**:
+  - Pantalla de inicio con accesos directos claros (*Cobrar venta*, *Catálogo WhatsApp*, *Productos y stock*, *Equipo y código*), navegación agrupada en lenguaje cotidiano, barra inferior táctil para celulares y alta rápida de productos en segundos.
 - **Cuentas con correo electrónico**: registro, inicio de sesión, recuperación de contraseña y panel multi-empresa (*Tus Empresas*), permitiendo a una misma persona ser creadora de su negocio y/o afiliada a otros comercios.
 - **Crear tu propia empresa en 3 pasos**: cada empresa recibe su propia base de datos aislada y un código único (`kiosko-XXXXXX`) con tarjeta QR imprimible, enlace directo (`?codigo=kiosko-XXXXXX`) y botón para compartir por WhatsApp.
 - **Afiliarse a una empresa existente**: los trabajadores ingresan el código `kiosko-XXXXXX`, verifican el comercio en vivo y solicitan afiliación (para que el creador apruebe y asigne puesto, turno, caja y salario) o ingresan al instante con un código de invitación directa por rol/correo.
