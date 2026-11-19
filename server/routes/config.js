@@ -629,6 +629,30 @@ router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (req, res
       restocks: pendingRestocks,
       unvalidated_shifts: unvalidatedShifts,
       affiliations_count: req.company?.id ? getPendingAffiliationsCount(req.company.id) : 0,
+      orders: db
+        .prepare(
+          `SELECT id, order_code, status, customer_name, customer_phone, delivery_mode, total_cup, payment_method, created_at
+           FROM customer_orders
+           WHERE status IN ('NUEVO', 'PREPARANDO', 'LISTO')
+           ORDER BY id DESC LIMIT 10`
+        )
+        .all(),
+      orders_count: Number(
+        db
+          .prepare(`SELECT COUNT(*) AS cnt FROM customer_orders WHERE status IN ('NUEVO', 'PREPARANDO', 'LISTO')`)
+          .get().cnt || 0
+      ),
+      new_orders_count: Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM customer_orders WHERE status = 'NUEVO'`).get().cnt || 0
+      ),
+    },
+    catalog_summary: {
+      enabled: Boolean(config.catalog_enabled),
+      whatsapp_phone: config.whatsapp_phone || config.transfermovil_phone || '',
+      visible_products: Number(
+        db.prepare(`SELECT COUNT(*) AS cnt FROM products WHERE active = 1 AND catalog_visible = 1`).get().cnt || 0
+      ),
+      total_orders: Number(db.prepare(`SELECT COUNT(*) AS cnt FROM customer_orders`).get().cnt || 0),
     },
     top_products: topProducts,
     automation_feed: automationFeed,

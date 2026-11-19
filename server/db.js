@@ -11,6 +11,7 @@ export const tenantDbStorage = new AsyncLocalStorage();
 
 export const DEFAULT_MODULES = {
   pos: true,
+  catalog: true,
   ipv: true,
   warehouse: true,
   pricing: true,
@@ -22,6 +23,7 @@ export const DEFAULT_MODULES = {
 };
 
 export const DEFAULT_PERMISSIONS = {
+  vendedor_manage_orders: true,
   vendedor_request_restock: true,
   vendedor_view_pricelist: true,
   vendedor_open_shift: true,
@@ -65,6 +67,7 @@ export const MANAGEMENT_PRESETS = {
     strict_bancarizacion_block: 0,
     modules: {
       pos: true,
+      catalog: true,
       ipv: true,
       warehouse: true,
       pricing: true,
@@ -91,6 +94,7 @@ export const MANAGEMENT_PRESETS = {
     strict_bancarizacion_block: 0,
     modules: {
       pos: true,
+      catalog: true,
       ipv: true,
       warehouse: true,
       pricing: true,
@@ -252,6 +256,70 @@ export function migrateTenantSchema(db) {
   );
 
   ensureColumn(db, 'users', 'email', "TEXT NOT NULL DEFAULT ''");
+
+  // Public customer catalog & WhatsApp ordering columns
+  ensureColumn(db, 'business_config', 'catalog_enabled', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(
+    db,
+    'business_config',
+    'catalog_welcome',
+    "TEXT NOT NULL DEFAULT 'Elige tus productos, arma tu pedido y envíalo directo a nuestro WhatsApp.'"
+  );
+  ensureColumn(
+    db,
+    'business_config',
+    'catalog_hours',
+    "TEXT NOT NULL DEFAULT 'Todos los días · 7:00 a 22:00'"
+  );
+  ensureColumn(db, 'business_config', 'catalog_allow_pickup', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'business_config', 'catalog_allow_delivery', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'business_config', 'catalog_delivery_fee_cup', 'REAL NOT NULL DEFAULT 150');
+  ensureColumn(db, 'business_config', 'catalog_free_delivery_from_cup', 'REAL NOT NULL DEFAULT 3000');
+  ensureColumn(db, 'business_config', 'catalog_min_order_cup', 'REAL NOT NULL DEFAULT 0');
+  ensureColumn(db, 'business_config', 'catalog_show_out_of_stock', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'business_config', 'catalog_allow_backorder', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'business_config', 'catalog_stock_source', "TEXT NOT NULL DEFAULT 'BOTH'");
+
+  ensureColumn(db, 'products', 'catalog_visible', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'products', 'catalog_featured', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'products', 'catalog_description', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'products', 'image_url', "TEXT NOT NULL DEFAULT ''");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS customer_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_code TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'NUEVO' CHECK (status IN ('NUEVO', 'PREPARANDO', 'LISTO', 'ENTREGADO', 'CANCELADO')),
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT NOT NULL DEFAULT '',
+      delivery_mode TEXT NOT NULL DEFAULT 'RETIRO' CHECK (delivery_mode IN ('RETIRO', 'DOMICILIO')),
+      delivery_address TEXT NOT NULL DEFAULT '',
+      payment_method TEXT NOT NULL DEFAULT 'EFECTIVO' CHECK (payment_method IN ('EFECTIVO', 'TRANSFERMOVIL', 'ENZONA')),
+      cash_tendered_cup REAL NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      subtotal_cup REAL NOT NULL DEFAULT 0,
+      discount_cup REAL NOT NULL DEFAULT 0,
+      delivery_fee_cup REAL NOT NULL DEFAULT 0,
+      total_cup REAL NOT NULL DEFAULT 0,
+      whatsapp_text TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'CATALOGO',
+      sale_id INTEGER DEFAULT NULL REFERENCES sales(id),
+      handled_by INTEGER DEFAULT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS customer_order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES customer_orders(id) ON DELETE CASCADE,
+      product_id INTEGER DEFAULT NULL REFERENCES products(id),
+      product_name TEXT NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'u',
+      quantity REAL NOT NULL,
+      unit_price_cup REAL NOT NULL,
+      subtotal_cup REAL NOT NULL
+    );
+  `);
 }
 
 export function initSchema(db) {

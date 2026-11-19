@@ -12,6 +12,7 @@ import configRoutes from './routes/config.js';
 import warehouseRoutes from './routes/warehouse.js';
 import posRoutes from './routes/pos.js';
 import financeRoutes from './routes/finance.js';
+import { publicCatalogRouter, adminCatalogRouter } from './routes/catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -36,6 +37,8 @@ export function createApiApp(dbPath) {
   app.use('/api/warehouse', warehouseRoutes);
   app.use('/api/pos', posRoutes);
   app.use('/api/finance', financeRoutes);
+  app.use('/api/catalog', publicCatalogRouter);
+  app.use('/api/catalog-admin', adminCatalogRouter);
 
   app.use('/api/*', (_req, res) => {
     res.status(404).json({ error: 'Ruta de API no encontrada.' });

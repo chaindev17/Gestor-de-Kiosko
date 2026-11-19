@@ -258,6 +258,17 @@ export function getCompanyById(companyId) {
   return pdb.prepare('SELECT * FROM companies WHERE id = ? AND active = 1').get(Number(companyId)) || null;
 }
 
+export function getCompanyByCode(rawCode) {
+  const clean = normalizeCompanyCode(rawCode);
+  if (!clean) return null;
+  const pdb = getPlatformDb();
+  return (
+    pdb
+      .prepare('SELECT * FROM companies WHERE UPPER(company_code) = UPPER(?) AND active = 1')
+      .get(clean) || null
+  );
+}
+
 export function getDemoCompany() {
   const pdb = getPlatformDb();
   return pdb.prepare('SELECT * FROM companies WHERE is_demo = 1 ORDER BY id ASC LIMIT 1').get() || null;
@@ -861,14 +872,30 @@ export function createCompanyForAccount(account, payload = {}) {
       ],
     });
 
+    if (payload.catalog_allow_delivery !== undefined || payload.catalog_delivery_fee_cup !== undefined || payload.catalog_hours) {
+      tdb
+        .prepare(
+          `UPDATE business_config
+           SET catalog_allow_delivery = ?,
+               catalog_delivery_fee_cup = ?,
+               catalog_hours = COALESCE(NULLIF(?, ''), catalog_hours)
+           WHERE id = 1`
+        )
+        .run(
+          payload.catalog_allow_delivery === false ? 0 : 1,
+          Math.max(0, roundCup(payload.catalog_delivery_fee_cup ?? 150)),
+          String(payload.catalog_hours || '').trim()
+        );
+    }
+
     if (seedCatalog === 'starter') {
       const insProd = tdb.prepare(
         `INSERT INTO products
          (sku, name, category, unit, unit_cost_cup, indirect_cost_pct, sale_price_cup,
           is_price_capped, price_cap_cup, price_cap_resolution, is_margin_regulated, sales_tax_exempt,
           warehouse_stock, kiosk_stock, warehouse_min_stock, kiosk_min_stock, kiosk_target_stock,
-          current_batch, next_expiry_date, active)
-         VALUES (?, ?, ?, ?, ?, 8.0, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, 1)`
+          current_batch, next_expiry_date, catalog_visible, catalog_featured, catalog_description, active)
+         VALUES (?, ?, ?, ?, ?, 8.0, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, 1, ?, '', 1)`
       );
       const insMov = tdb.prepare(
         `INSERT INTO inventory_movements
@@ -901,7 +928,8 @@ export function createCompanyForAccount(account, payload = {}) {
             item.kMin,
             item.kTarget,
             batch,
-            expIso
+            expIso,
+            idx < 4 ? 1 : 0
           ).lastInsertRowid
         );
         const totQty = item.wh + item.kiosk;

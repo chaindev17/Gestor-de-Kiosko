@@ -1200,5 +1200,87 @@ export function seedDemoData(db) {
       'Economía',
       `Auditado Turno Tarde (${yesterday}) sin faltantes y conciliados cobros QR Transfermóvil/EnZona.`
     );
+
+    // Seed WhatsApp catalog configuration, featured flags, descriptions, and 2 live customer orders
+    db.prepare(
+      `UPDATE business_config
+       SET whatsapp_phone = '+53 53841920',
+           catalog_enabled = 1,
+           catalog_welcome = 'Armá tu pedido en segundos y envialo directo a nuestro WhatsApp. Te confirmamos al instante.',
+           catalog_hours = 'Todos los días · 7:00 a 23:00',
+           catalog_allow_pickup = 1,
+           catalog_allow_delivery = 1,
+           catalog_delivery_fee_cup = 150,
+           catalog_free_delivery_from_cup = 3000
+       WHERE id = 1`
+    ).run();
+
+    const prodNotes = [
+      [1, 1, 'Corte fresco seleccionado, ideal para el almuerzo familiar.'],
+      [2, 1, 'Botella sellada de 1 litro, primera calidad.'],
+      [3, 1, 'Bolsa de 1 kg, excelente disolución y rendimiento.'],
+      [4, 0, 'Paquete de 500 g de trigo duro, cocción en 8 minutos.'],
+      [5, 0, 'Embutido cocido de alta calidad, listo para preparar.'],
+      [6, 1, 'Grano entero limpio, cosecha seleccionada.'],
+      [7, 1, 'Lata bien fría de 355 ml, lista para llevar.'],
+      [8, 0, 'Botella de agua mineral natural fría de 1.5 L.'],
+      [9, 1, 'Lata fría de 355 ml, sabor tradicional.'],
+      [10, 0, 'Paquete crujiente relleno de crema, ideal para merienda.'],
+      [11, 0, 'Detergente concentrado multiuso de alto poder.'],
+      [12, 0, 'Pastilla aromática suave para uso diario.'],
+    ];
+    const updProdCatalog = db.prepare(
+      `UPDATE products SET catalog_visible = 1, catalog_featured = ?, catalog_description = ? WHERE id = ?`
+    );
+    for (const [pid, feat, desc] of prodNotes) {
+      updProdCatalog.run(feat, desc, pid);
+    }
+
+    // Seed 2 realistic WhatsApp orders for demo clarity
+    const seedProds = db.prepare('SELECT id, name, unit, sale_price_cup FROM products WHERE id IN (1, 2, 7, 9)').all();
+    const byId = Object.fromEntries(seedProds.map((p) => [p.id, p]));
+    if (byId[1] && byId[7]) {
+      const i1 = roundCup(byId[1].sale_price_cup * 2);
+      const i2 = roundCup(byId[7].sale_price_cup * 3);
+      const sub1 = roundCup(i1 + i2);
+      const del1 = sub1 >= 3000 ? 0 : 150;
+      const tot1 = roundCup(sub1 + del1);
+      const o1 = db
+        .prepare(
+          `INSERT INTO customer_orders
+           (order_code, status, customer_name, customer_phone, delivery_mode, delivery_address,
+            payment_method, cash_tendered_cup, notes, subtotal_cup, discount_cup, delivery_fee_cup, total_cup, whatsapp_text, source)
+           VALUES ('PED-0001', 'NUEVO', 'Mariana González', '+53 54128890', 'DOMICILIO', 'Calle 21 #610 apto 3 e/ B y C',
+                   'EFECTIVO', ?, 'Tocar timbre del apartamento 3, gracias.', ?, 0, ?, ?, ?, 'CATALOGO')`
+        )
+        .run(Math.ceil(tot1 / 500) * 500, sub1, del1, tot1, `Pedido PED-0001 de Mariana González — Total ${tot1} CUP`);
+      const o1Id = Number(o1.lastInsertRowid);
+      const insOi = db.prepare(
+        `INSERT INTO customer_order_items (order_id, product_id, product_name, unit, quantity, unit_price_cup, subtotal_cup)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      insOi.run(o1Id, byId[1].id, byId[1].name, byId[1].unit, 2, byId[1].sale_price_cup, i1);
+      insOi.run(o1Id, byId[7].id, byId[7].name, byId[7].unit, 3, byId[7].sale_price_cup, i2);
+
+      if (byId[2] && byId[9]) {
+        const j1 = roundCup(byId[2].sale_price_cup * 1);
+        const j2 = roundCup(byId[9].sale_price_cup * 4);
+        const sub2 = roundCup(j1 + j2);
+        const disc2 = roundCup(sub2 * 0.02);
+        const tot2 = roundCup(sub2 - disc2);
+        const o2 = db
+          .prepare(
+            `INSERT INTO customer_orders
+             (order_code, status, customer_name, customer_phone, delivery_mode, delivery_address,
+              payment_method, cash_tendered_cup, notes, subtotal_cup, discount_cup, delivery_fee_cup, total_cup, whatsapp_text, source)
+             VALUES ('PED-0002', 'PREPARANDO', 'Roberto Álvarez', '+53 52993411', 'RETIRO', '',
+                     'TRANSFERMOVIL', 0, 'Paso en 15 minutos a buscarlo.', ?, ?, 0, ?, ?, 'CATALOGO')`
+          )
+          .run(sub2, disc2, tot2, `Pedido PED-0002 de Roberto Álvarez — Total ${tot2} CUP`);
+        const o2Id = Number(o2.lastInsertRowid);
+        insOi.run(o2Id, byId[2].id, byId[2].name, byId[2].unit, 1, byId[2].sale_price_cup, j1);
+        insOi.run(o2Id, byId[9].id, byId[9].name, byId[9].unit, 4, byId[9].sale_price_cup, j2);
+      }
+    }
   });
 }

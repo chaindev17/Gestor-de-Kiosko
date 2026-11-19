@@ -427,3 +427,103 @@ test('9. Afiliación por correo con código kiosko-XXXXXX, aprobación del cread
   assert.equal(relogin.status, 200);
 });
 
+test('10. Catálogo público para clientes, pedido directo a WhatsApp y cobro en 1 clic con cuadre NCIF', async () => {
+  // 1. Creator sets WhatsApp number & delivery rules on Kiosko La Unión
+  const cfg = await req('PUT', '/api/catalog-admin/settings', {
+    token: tokens.unionOwner,
+    body: {
+      whatsapp_phone: '+598 99 456 789',
+      catalog_enabled: true,
+      catalog_welcome: 'Armá tu pedido y recibimos al instante en nuestro WhatsApp.',
+      catalog_allow_pickup: true,
+      catalog_allow_delivery: true,
+      catalog_delivery_fee_cup: 120,
+      catalog_free_delivery_from_cup: 2500,
+    },
+  });
+  assert.equal(cfg.status, 200);
+
+  // 2. Creator adds a featured product in 1 step
+  const quick = await req('POST', '/api/catalog-admin/products/quick', {
+    token: tokens.unionOwner,
+    body: {
+      name: 'Combo Merienda Familiar',
+      category: 'Panadería y Confituras',
+      unit: 'u',
+      sale_price_cup: 950,
+      initial_stock: 12,
+      catalog_description: 'Galletas, jugo natural y café recién molido',
+      catalog_featured: true,
+    },
+  });
+  assert.equal(quick.status, 201);
+
+  // 3. Customer opens public catalog WITHOUT login (verifies zero internal cost leakage)
+  const pub = await req('GET', `/api/catalog/${encodeURIComponent(tokens.unionCode)}`);
+  assert.equal(pub.status, 200);
+  assert.equal(pub.data.store.business_name, 'Kiosko La Unión');
+  assert.equal(pub.data.store.whatsapp_digits, '59899456789');
+  const combo = pub.data.products.find((p) => p.name === 'Combo Merienda Familiar');
+  assert.ok(combo, 'Quick product appears live in public catalog');
+  assert.equal(combo.catalog_featured, true);
+  assert.equal(combo.unit_cost_cup, undefined, 'Never leak internal unit cost in public catalog');
+
+  // 4. Customer builds order & submits -> generates formatted WhatsApp message & wa.me URL
+  const orderRes = await req('POST', `/api/catalog/${encodeURIComponent(tokens.unionCode)}/orders`, {
+    body: {
+      customer_name: 'Valentina Suárez',
+      customer_phone: '098 321 654',
+      delivery_mode: 'DOMICILIO',
+      delivery_address: 'Av. Brasil 2580 apto 402',
+      payment_method: 'EFECTIVO',
+      cash_tendered_cup: 2500,
+      notes: 'Avisar por portero eléctrico',
+      items: [{ product_id: combo.id, quantity: 2 }],
+    },
+  });
+  assert.equal(orderRes.status, 201);
+  assert.equal(orderRes.data.order.order_code, 'PED-0001');
+  assert.equal(orderRes.data.order.subtotal_cup, 1900);
+  assert.equal(orderRes.data.order.delivery_fee_cup, 120);
+  assert.equal(orderRes.data.order.total_cup, 2020);
+  assert.equal(orderRes.data.has_store_whatsapp, true);
+  assert.match(orderRes.data.whatsapp_url, /^https:\/\/wa\.me\/59899456789\?text=/);
+  assert.match(orderRes.data.whatsapp_text, /Combo Merienda Familiar/);
+  assert.match(orderRes.data.whatsapp_text, /Valentina Suárez/);
+  assert.match(orderRes.data.whatsapp_text, /vuelto: \$480/);
+
+  // 5. Demo company does NOT see Kiosko La Unión's WhatsApp order (strict isolation)
+  const demoAdm = await req('GET', '/api/catalog-admin/overview', { token: tokens.jefe });
+  assert.ok(!demoAdm.data.orders.some((o) => o.customer_name === 'Valentina Suárez'));
+
+  // 6. Owner sees live pending_orders badge, marks PREPARANDO (gets customer wa.me reply link), & checks out in 1 click
+  const me = await req('GET', '/api/auth/me', { token: tokens.unionOwner });
+  assert.equal(me.data.badges.pending_orders, 1);
+
+  const prep = await req('PUT', `/api/catalog-admin/orders/${orderRes.data.order.id}/status`, {
+    token: tokens.unionOwner,
+    body: { status: 'PREPARANDO' },
+  });
+  assert.equal(prep.status, 200);
+  assert.match(prep.data.customer_whatsapp_url, /^https:\/\/wa\.me\/59898321654\?text=/);
+
+  const paid = await req('POST', `/api/catalog-admin/orders/${orderRes.data.order.id}/checkout`, {
+    token: tokens.unionOwner,
+    body: { payment_method: 'EFECTIVO' },
+  });
+  assert.equal(paid.status, 200);
+  assert.equal(paid.data.order.status, 'ENTREGADO');
+  assert.match(paid.data.receipt_number, /^TK-/);
+  assert.equal(paid.data.change_given_cup, 480);
+
+  // 7. Stock dropped from 12 to 10 AND NCIF trial balance remains strictly balanced!
+  const pubAfter = await req('GET', `/api/catalog/${encodeURIComponent(tokens.unionCode)}`);
+  const comboAfter = pubAfter.data.products.find((p) => p.id === combo.id);
+  assert.equal(comboAfter.available_stock, 10);
+
+  const acct = await req('GET', '/api/finance/accounting', { token: tokens.unionOwner });
+  assert.equal(acct.status, 200);
+  assert.equal(acct.data.trial_totals.is_balanced, true, 'Accounting stays strictly balanced after WhatsApp order checkout');
+});
+
+

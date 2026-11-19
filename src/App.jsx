@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 import { api, setSessionToken } from './lib/api.js';
+import { decodeCatalogSnapshot } from './lib/whatsapp.js';
 import ConectaLanding from './components/ConectaLanding.jsx';
 import AuthFlow from './components/AuthFlow.jsx';
 import AccountHub from './components/AccountHub.jsx';
 import CreateCompanyWizard from './components/CreateCompanyWizard.jsx';
+import PublicCatalog from './components/PublicCatalog.jsx';
 import Layout, { getDefaultPageForRole, getNavForRole } from './components/Layout.jsx';
 import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage.jsx';
+import CatalogWhatsappPage from './pages/CatalogWhatsappPage.jsx';
 import JefeDashboard from './pages/JefeDashboard.jsx';
 import StaffShiftsPage from './pages/StaffShiftsPage.jsx';
 import PosPage from './pages/PosPage.jsx';
@@ -21,13 +24,20 @@ import CompliancePage from './pages/CompliancePage.jsx';
 
 export default function App() {
   const [booting, setBooting] = useState(true);
-  // view: 'landing' | 'auth' | 'hub' | 'create_wizard' | 'workspace'
+  // view: 'landing' | 'auth' | 'hub' | 'create_wizard' | 'workspace' | 'catalog'
   const [view, setView] = useState('landing');
+  const [catalogState, setCatalogState] = useState({
+    code: 'kiosko-CEIBA1',
+    snapshot: null,
+    ownerPreview: false,
+    returnView: 'landing',
+  });
+  const [catalogInitialTab, setCatalogInitialTab] = useState('orders');
   const [authOpts, setAuthOpts] = useState({
     mode: 'login',
     intent: 'create',
     businessName: '',
-    preset: 'kiosko_completo',
+    preset: 'solo_dueno',
     code: '',
   });
   const [demoLoading, setDemoLoading] = useState(false);
@@ -94,7 +104,23 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const storeCode = params.get('tienda') || params.get('catalogo') || params.get('store') || '';
+    const snapParam = params.get('s') || '';
     const urlCode = params.get('codigo') || params.get('code') || '';
+
+    // Customer clicked a store catalog link (?tienda=kiosko-XXXXXX) -> open directly, no login needed!
+    if (storeCode || snapParam) {
+      const decoded = snapParam ? decodeCatalogSnapshot(snapParam) : null;
+      setCatalogState({
+        code: storeCode || decoded?.store?.company_code || '',
+        snapshot: decoded,
+        ownerPreview: false,
+        returnView: 'landing',
+      });
+      setView('catalog');
+      setBooting(false);
+      return;
+    }
 
     api
       .get('/api/auth/me')
@@ -128,6 +154,22 @@ export default function App() {
       setActivePage(getDefaultPageForRole(user.role, badges, config));
     }
   }, [view, user, activePage, badges, config]);
+
+  function openCatalogPreview(code, fromView = view, isOwner = false) {
+    setCatalogState({
+      code: code || activeCompany?.company_code || config?.company_code || 'kiosko-CEIBA1',
+      snapshot: null,
+      ownerPreview: isOwner,
+      returnView: fromView,
+    });
+    setView('catalog');
+    window.scrollTo(0, 0);
+  }
+
+  function openCatalogTab(tabName) {
+    setCatalogInitialTab(tabName || 'orders');
+    setActivePage('catalog-wa');
+  }
 
   async function handleTryDemo() {
     setDemoLoading(true);
@@ -194,7 +236,7 @@ export default function App() {
   return (
     <>
       {toast && (
-        <div className="fixed bottom-4 right-4 z-50 max-w-md rounded-2xl border shadow-xl px-4 py-3 text-xs flex items-start gap-2.5 bg-white border-[#E5DED0] no-print">
+        <div className="fixed bottom-20 lg:bottom-4 right-4 z-50 max-w-md rounded-2xl border shadow-xl px-4 py-3 text-xs flex items-start gap-2.5 bg-white border-[#E5DED0] no-print">
           {toast.type === 'error' ? (
             <AlertCircle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
           ) : (
@@ -217,6 +259,34 @@ export default function App() {
         </div>
       )}
 
+      {view === 'catalog' && (
+        <PublicCatalog
+          companyCode={catalogState.code}
+          initialSnapshot={catalogState.snapshot}
+          ownerPreview={catalogState.ownerPreview}
+          onBack={() => {
+            if (window.location.search) {
+              window.history.replaceState({}, '', window.location.pathname);
+            }
+            if (catalogState.ownerPreview && user) {
+              refreshBadges();
+              setView('workspace');
+            } else {
+              setView(catalogState.returnView || 'landing');
+            }
+          }}
+          onConfigureWhatsapp={() => {
+            setCatalogInitialTab('settings');
+            setActivePage('catalog-wa');
+            setView('workspace');
+          }}
+          onOrderCreated={() => {
+            if (user) refreshBadges();
+          }}
+          notify={notify}
+        />
+      )}
+
       {view === 'landing' && (
         <ConectaLanding
           demoLoading={demoLoading}
@@ -225,7 +295,7 @@ export default function App() {
             setView('auth');
             window.scrollTo(0, 0);
           }}
-          onStartRegister={({ intent = 'create', businessName = '', preset = 'kiosko_completo' } = {}) => {
+          onStartRegister={({ intent = 'create', businessName = '', preset = 'solo_dueno' } = {}) => {
             setAuthOpts({ mode: 'register', intent, businessName, preset, code: '' });
             setView('auth');
             window.scrollTo(0, 0);
@@ -235,6 +305,7 @@ export default function App() {
             setView('auth');
             window.scrollTo(0, 0);
           }}
+          onTryCatalog={() => openCatalogPreview('kiosko-CEIBA1', 'landing', false)}
           onTryDemo={handleTryDemo}
         />
       )}
@@ -272,6 +343,7 @@ export default function App() {
           account={account}
           memberships={memberships}
           onSelectCompany={(res) => applyPayload(res, 'workspace')}
+          onPreviewCatalog={(code) => openCatalogPreview(code, 'hub', true)}
           onStartCreateCompany={() => setView('create_wizard')}
           onStartAffiliate={() => {
             setAuthOpts((o) => ({ ...o, mode: 'affiliate', code: '' }));
@@ -306,7 +378,11 @@ export default function App() {
           config={config}
           badges={badges}
           activePage={activePage}
-          onNavigate={setActivePage}
+          onNavigate={(pageId) => {
+            if (pageId === 'catalog-wa') setCatalogInitialTab('orders');
+            setActivePage(pageId);
+          }}
+          onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
           onSwitchUser={handleSwitchUser}
           onOpenHub={account ? handleOpenHub : null}
           onLogout={handleLogout}
@@ -321,9 +397,21 @@ export default function App() {
               notify={notify}
             />
           )}
+          {activePage === 'catalog-wa' && (
+            <CatalogWhatsappPage
+              user={user}
+              initialTab={catalogInitialTab}
+              onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
+              onRefreshBadges={refreshBadges}
+              onConfigUpdated={(nextCfg) => setConfig(nextCfg)}
+              notify={notify}
+            />
+          )}
           {activePage === 'jefe-home' && (
             <JefeDashboard
               onNavigate={setActivePage}
+              onOpenCatalogTab={openCatalogTab}
+              onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
               onRefreshBadges={refreshBadges}
               notify={notify}
             />
@@ -334,6 +422,7 @@ export default function App() {
           {activePage === 'pos' && (
             <PosPage
               user={user}
+              badges={badges}
               onNavigate={setActivePage}
               onRefreshBadges={refreshBadges}
               notify={notify}

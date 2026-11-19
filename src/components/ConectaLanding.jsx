@@ -5,6 +5,7 @@ import {
   ChevronDown,
   KeyRound,
   Mail,
+  MessageCircle,
   Package,
   Pause,
   Play,
@@ -36,8 +37,8 @@ const DEMO_STEPS = [
   },
   {
     num: 4,
-    title: 'Todo cuadra solo',
-    sub: 'Ventas, stock y cuentas al día',
+    title: 'Pedidos a WhatsApp',
+    sub: 'El cliente arma su pedido',
   },
 ];
 
@@ -49,6 +50,10 @@ const INTENT_FILTERS = [
 ];
 
 const FAQS = [
+  {
+    q: '¿Cómo funciona el catálogo con pedidos directo a mi WhatsApp?',
+    a: 'Cada empresa recibe automáticamente su link público y cartel QR. El cliente entra desde su celular sin registrarse, agrega los productos al carrito, elige retiro o envío a domicilio y toca "Enviar pedido por WhatsApp": te llega el mensaje perfectamente armado a tu WhatsApp y en tu panel lo cobras y descuentas del stock en un clic.',
+  },
   {
     q: '¿Cómo funciona el registro con correo electrónico?',
     a: 'Creas tu cuenta con tu nombre, correo electrónico y contraseña. En ese mismo momento eliges si quieres crear una empresa nueva (quedando como creador y administrador) o afiliarte a una empresa existente con su código.',
@@ -80,6 +85,7 @@ export default function ConectaLanding({
   onStartLogin,
   onStartAffiliate,
   onTryDemo,
+  onTryCatalog,
   demoLoading = false,
 }) {
   const [step, setStep] = useState(0);
@@ -184,15 +190,13 @@ export default function ConectaLanding({
             </h1>
 
             <p className="text-[16px] sm:text-[17px] leading-relaxed text-[#57534E] max-w-xl">
-              Te registras con tu correo electrónico, creas tu empresa o te afilias a una con su
-              código.{' '}
+              Creas tu empresa con tu correo o te afilias con código, eliges qué funciones usar y compartes tu{' '}
               <strong className="font-semibold text-[#181715]">
-                El creador decide cómo manejar el software, qué módulos activar y qué hace cada
-                persona.
+                catálogo digital para que tus clientes armen su pedido y te llegue listo a tu WhatsApp.
               </strong>
             </p>
 
-            <div className="flex flex-wrap items-center gap-3 pt-1">
+            <div className="flex flex-wrap items-center gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => onStartRegister({ intent: 'create' })}
@@ -201,6 +205,16 @@ export default function ConectaLanding({
                 Crear mi empresa
                 <ArrowRight className="h-4 w-4" />
               </button>
+              {onTryCatalog && (
+                <button
+                  type="button"
+                  onClick={onTryCatalog}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#E6F5EF] hover:bg-[#D5EDE3] border border-[#BBE4D4] px-5 py-3 text-sm font-bold text-[#15614B] transition cursor-pointer"
+                >
+                  <MessageCircle className="h-4 w-4 text-[#1DA851]" />
+                  Probar catálogo WhatsApp
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onStartAffiliate()}
@@ -402,9 +416,14 @@ export default function ConectaLanding({
                         <p className="mt-1 text-sm font-bold tabular-nums text-[#C2542D]">Auto-pedido</p>
                       </div>
                     </div>
-                    <div className="rounded-xl border border-[#EAE4D9] px-3.5 py-2.5 flex items-center justify-between text-xs">
-                      <span className="text-[#57534E]">Arqueo, IPV y asientos del día</span>
-                      <span className="font-semibold text-[#181715]">Cuadrados al instante ✓</span>
+                    <div className="rounded-xl bg-[#EDF7ED] border border-[#C6E4C6] p-3 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between font-bold text-[#165E35]">
+                        <span>💬 Pedido #PED-0001 recibido en tu WhatsApp</span>
+                        <span className="tabular-nums">$2,480</span>
+                      </div>
+                      <p className="text-[11px] text-[#2B5938]">
+                        Mariana · 2× Pollo, 3× Refresco · 🛵 Domicilio · Cobrar y descontar stock en 1 clic ✓
+                      </p>
                     </div>
                   </div>
                 )}
