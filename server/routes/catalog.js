@@ -36,7 +36,7 @@ function buildPublicCatalogPayload(db, company) {
   const whatsappPhone = resolveStoreWhatsapp(config);
   const rawProducts = db
     .prepare(
-      `SELECT id, sku, name, category, unit, sale_price_cup, kiosk_stock, warehouse_stock,
+      `SELECT id, sku, name, category, compatibility, unit, sale_price_cup, kiosk_stock, warehouse_stock,
               catalog_visible, catalog_featured, catalog_description, image_url, next_expiry_date
        FROM products
        WHERE active = 1 AND catalog_visible = 1
@@ -55,9 +55,12 @@ function buildPublicCatalogPayload(db, company) {
         sku: p.sku,
         name: p.name,
         category: p.category,
+        compatibility: p.compatibility || '',
         unit: p.unit,
         sale_price_cup: roundCup(p.sale_price_cup),
         available_stock: available,
+        show_stock_qty: Boolean(config.catalog_show_stock_qty),
+        stock_label: available > 0 ? 'Disponible' : config.catalog_allow_backorder ? 'Por encargo' : 'Agotado',
         in_stock: inStock,
         catalog_featured: Boolean(p.catalog_featured),
         catalog_description: p.catalog_description || '',
@@ -88,7 +91,8 @@ function buildPublicCatalogPayload(db, company) {
       catalog_delivery_fee_cup: roundCup(config.catalog_delivery_fee_cup ?? 0),
       catalog_free_delivery_from_cup: roundCup(config.catalog_free_delivery_from_cup ?? 0),
       catalog_min_order_cup: roundCup(config.catalog_min_order_cup ?? 0),
-      catalog_show_out_of_stock: Boolean(config.catalog_show_out_of_stock ?? 0),
+      catalog_show_out_of_stock: Boolean(config.catalog_show_out_of_stock ?? 1),
+      catalog_show_stock_qty: Boolean(config.catalog_show_stock_qty ?? 0),
       catalog_allow_backorder: Boolean(config.catalog_allow_backorder ?? 0),
       qr_discount_pct: roundCup(config.qr_discount_pct ?? 0),
       has_transfermovil: Boolean(config.transfermovil_merchant_code || config.transfermovil_phone),
@@ -366,10 +370,12 @@ publicCatalogRouter.post('/:code/orders', (req, res) => {
 adminCatalogRouter.get('/overview', requireAuth, (req, res) => {
   const db = getDb();
   const config = getConfig(db);
+  const canViewCosts =
+    req.user.role === 'jefe' || Boolean(req.user.permissions_matrix?.flags?.view_costs);
   const orders = hydrateOrders(db, 80);
   const products = db
     .prepare(
-      `SELECT id, sku, name, category, unit, unit_cost_cup, sale_price_cup,
+      `SELECT id, sku, name, category, compatibility, unit, unit_cost_cup, sale_price_cup,
               is_price_capped, price_cap_cup, kiosk_stock, warehouse_stock,
               catalog_visible, catalog_featured, catalog_description, image_url
        FROM products
@@ -377,12 +383,18 @@ adminCatalogRouter.get('/overview', requireAuth, (req, res) => {
        ORDER BY catalog_featured DESC, category ASC, name ASC`
     )
     .all()
-    .map((p) => ({
-      ...p,
-      available_stock: computeAvailableStock(p, config),
-      catalog_visible: Boolean(p.catalog_visible),
-      catalog_featured: Boolean(p.catalog_featured),
-    }));
+    .map((p) => {
+      const available = computeAvailableStock(p, config);
+      return {
+        ...p,
+        compatibility: p.compatibility || '',
+        unit_cost_cup: canViewCosts ? p.unit_cost_cup : null,
+        available_stock: available,
+        in_stock: available > 0,
+        catalog_visible: Boolean(p.catalog_visible),
+        catalog_featured: Boolean(p.catalog_featured),
+      };
+    });
 
   const publicPreview = buildPublicCatalogPayload(db, req.company);
   const whatsappPhone = resolveStoreWhatsapp(config);
@@ -403,7 +415,8 @@ adminCatalogRouter.get('/overview', requireAuth, (req, res) => {
       catalog_delivery_fee_cup: roundCup(config.catalog_delivery_fee_cup ?? 0),
       catalog_free_delivery_from_cup: roundCup(config.catalog_free_delivery_from_cup ?? 0),
       catalog_min_order_cup: roundCup(config.catalog_min_order_cup ?? 0),
-      catalog_show_out_of_stock: Boolean(config.catalog_show_out_of_stock ?? 0),
+      catalog_show_out_of_stock: Boolean(config.catalog_show_out_of_stock ?? 1),
+      catalog_show_stock_qty: Boolean(config.catalog_show_stock_qty ?? 0),
       catalog_allow_backorder: Boolean(config.catalog_allow_backorder ?? 0),
       catalog_stock_source: config.catalog_stock_source || 'BOTH',
       qr_discount_pct: roundCup(config.qr_discount_pct ?? 0),
@@ -465,6 +478,7 @@ adminCatalogRouter.put('/settings', requireAuth, requireRole('jefe', 'economico'
          catalog_free_delivery_from_cup = ?,
          catalog_min_order_cup = ?,
          catalog_show_out_of_stock = ?,
+         catalog_show_stock_qty = ?,
          catalog_allow_backorder = ?,
          catalog_stock_source = ?,
          updated_at = datetime('now')
@@ -481,6 +495,7 @@ adminCatalogRouter.put('/settings', requireAuth, requireRole('jefe', 'economico'
     Math.max(0, roundCup(b.catalog_free_delivery_from_cup ?? current.catalog_free_delivery_from_cup ?? 0)),
     Math.max(0, roundCup(b.catalog_min_order_cup ?? current.catalog_min_order_cup ?? 0)),
     pickBool('catalog_show_out_of_stock'),
+    pickBool('catalog_show_stock_qty'),
     pickBool('catalog_allow_backorder'),
     stockSource
   );
@@ -496,65 +511,118 @@ adminCatalogRouter.put('/settings', requireAuth, requireRole('jefe', 'economico'
   res.json({ config: getConfig(db) });
 });
 
-adminCatalogRouter.put(
-  '/products/:id',
-  requireAuth,
-  requireRole('jefe', 'almacenero', 'economico'),
-  (req, res) => {
-    const db = getDb();
-    const config = getConfig(db);
-    const id = Number(req.params.id);
-    const prod = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(id);
-    if (!prod) return res.status(404).json({ error: 'Producto no encontrado.' });
-
-    const b = req.body || {};
-    const nextVisible = b.catalog_visible !== undefined ? (b.catalog_visible ? 1 : 0) : prod.catalog_visible;
-    const nextFeatured =
-      b.catalog_featured !== undefined ? (b.catalog_featured ? 1 : 0) : prod.catalog_featured;
-    const nextDesc =
-      b.catalog_description !== undefined
-        ? String(b.catalog_description).trim().slice(0, 240)
-        : prod.catalog_description;
-    const nextImg = b.image_url !== undefined ? String(b.image_url).trim().slice(0, 500) : prod.image_url;
-    const nextName = b.name !== undefined && String(b.name).trim() ? String(b.name).trim() : prod.name;
-    const nextCategory =
-      b.category !== undefined && String(b.category).trim() ? String(b.category).trim() : prod.category;
-
-    let nextPrice = prod.sale_price_cup;
-    if (b.sale_price_cup !== undefined && roundCup(b.sale_price_cup) !== roundCup(prod.sale_price_cup)) {
-      if (req.user.role === 'almacenero') {
-        return res.status(403).json({ error: 'Solo el creador o económico pueden cambiar precios de venta.' });
-      }
-      if (req.user.role === 'economico' && config.permissions?.economico_edit_prices_directly === false) {
-        return res.status(403).json({ error: 'Solo el creador está autorizado para modificar precios.' });
-      }
-      const candidate = roundCup(b.sale_price_cup);
-      if (candidate <= 0) return res.status(400).json({ error: 'El precio debe ser mayor que cero.' });
-      const check = validateProposedPrice(prod, candidate, config);
-      if (!check.ok && check.valid === false) return res.status(400).json({ error: check.error });
-      if (check.error) return res.status(400).json({ error: check.error });
-      nextPrice = candidate;
-    }
-
-    db.prepare(
-      `UPDATE products
-       SET name = ?, category = ?, sale_price_cup = ?,
-           catalog_visible = ?, catalog_featured = ?, catalog_description = ?, image_url = ?,
-           updated_at = datetime('now')
-       WHERE id = ?`
-    ).run(nextName, nextCategory, nextPrice, nextVisible, nextFeatured, nextDesc, nextImg, id);
-
-    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-    res.json({
-      product: {
-        ...updated,
-        available_stock: computeAvailableStock(updated, config),
-        catalog_visible: Boolean(updated.catalog_visible),
-        catalog_featured: Boolean(updated.catalog_featured),
-      },
-    });
+adminCatalogRouter.put('/products/:id', requireAuth, (req, res) => {
+  const canPublish =
+    req.user.role === 'jefe' ||
+    Boolean(req.user.permissions_matrix?.flags?.publish_catalog) ||
+    Boolean(req.user.permissions_matrix?.flags?.upload_photos) ||
+    Boolean(req.user.permissions_matrix?.items?.['catalog-wa']?.canEdit);
+  if (!canPublish) {
+    return res
+      .status(403)
+      .json({ error: 'Su usuario no tiene permiso para editar productos del catálogo.' });
   }
-);
+  const db = getDb();
+  const config = getConfig(db);
+  const id = Number(req.params.id);
+  const prod = db.prepare('SELECT * FROM products WHERE id = ? AND active = 1').get(id);
+  if (!prod) return res.status(404).json({ error: 'Producto no encontrado.' });
+
+  const b = req.body || {};
+  const nextVisible = b.catalog_visible !== undefined ? (b.catalog_visible ? 1 : 0) : prod.catalog_visible;
+  const nextFeatured =
+    b.catalog_featured !== undefined ? (b.catalog_featured ? 1 : 0) : prod.catalog_featured;
+  const nextDesc =
+    b.catalog_description !== undefined
+      ? String(b.catalog_description).trim().slice(0, 320)
+      : prod.catalog_description;
+  const nextCompat =
+    b.compatibility !== undefined
+      ? String(b.compatibility).trim().slice(0, 260)
+      : prod.compatibility || '';
+  let nextImg = prod.image_url || '';
+  if (b.image_url !== undefined) {
+    const rawImg = String(b.image_url).trim();
+    if (rawImg.length > 750000) {
+      return res.status(400).json({ error: 'La foto supera el tamaño máximo (comprímala a ≤800×800 WebP/JPEG).' });
+    }
+    if (
+      rawImg &&
+      !rawImg.startsWith('data:image/') &&
+      !rawImg.startsWith('https://') &&
+      !rawImg.startsWith('http://') &&
+      !rawImg.startsWith('/')
+    ) {
+      return res.status(400).json({ error: 'Formato de foto no admitido.' });
+    }
+    nextImg = rawImg;
+  }
+  const nextName = b.name !== undefined && String(b.name).trim() ? String(b.name).trim() : prod.name;
+  const nextCategory =
+    b.category !== undefined && String(b.category).trim() ? String(b.category).trim() : prod.category;
+
+  let nextPrice = prod.sale_price_cup;
+  const canEditPrices =
+    req.user.role === 'jefe' || Boolean(req.user.permissions_matrix?.flags?.edit_prices);
+  if (b.sale_price_cup !== undefined && roundCup(b.sale_price_cup) !== roundCup(prod.sale_price_cup)) {
+    if (!canEditPrices) {
+      return res.status(403).json({
+        error: 'Solo el Jefe o usuarios con permiso de precios pueden modificar el precio final.',
+      });
+    }
+    const candidate = roundCup(b.sale_price_cup);
+    if (candidate <= 0) return res.status(400).json({ error: 'El precio debe ser mayor que cero.' });
+    const check = validateProposedPrice(prod, candidate, config);
+    if (!check.ok && check.valid === false) return res.status(400).json({ error: check.message || check.error });
+    if (check.error) return res.status(400).json({ error: check.error });
+    nextPrice = candidate;
+    db.prepare(
+      `INSERT INTO price_change_requests
+       (product_id, old_price_cup, new_price_cup, unit_cost_cup, full_cost_cup, margin_pct, reason, status, created_by, approved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'APLICADO', ?, ?)`
+    ).run(
+      id,
+      prod.sale_price_cup,
+      candidate,
+      prod.unit_cost_cup,
+      check.sheet?.full_cost_cup ?? prod.unit_cost_cup,
+      check.sheet?.margin_pct ?? 0,
+      'Actualización de precio desde Catálogo y Pedidos',
+      req.user.id,
+      req.user.id
+    );
+  }
+
+  db.prepare(
+    `UPDATE products
+     SET name = ?, category = ?, compatibility = ?, sale_price_cup = ?,
+         catalog_visible = ?, catalog_featured = ?, catalog_description = ?, image_url = ?,
+         updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(nextName, nextCategory, nextCompat, nextPrice, nextVisible, nextFeatured, nextDesc, nextImg, id);
+
+  logAudit(
+    db,
+    req.user,
+    'CATALOGO_PRODUCTO',
+    'Catálogo y Pedidos',
+    `Actualizado ${prod.sku} — ${nextName} (visible=${nextVisible ? 'SÍ' : 'NO'}, precio=${nextPrice.toFixed(2)} CUP).`
+  );
+
+  const canViewCosts =
+    req.user.role === 'jefe' || Boolean(req.user.permissions_matrix?.flags?.view_costs);
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  res.json({
+    product: {
+      ...updated,
+      unit_cost_cup: canViewCosts ? updated.unit_cost_cup : null,
+      available_stock: computeAvailableStock(updated, config),
+      in_stock: computeAvailableStock(updated, config) > 0,
+      catalog_visible: Boolean(updated.catalog_visible),
+      catalog_featured: Boolean(updated.catalog_featured),
+    },
+  });
+});
 
 // Super-intuitive 4-field product creator so shop owners add catalog & POS items effortlessly
 adminCatalogRouter.post(
@@ -578,8 +646,13 @@ adminCatalogRouter.post(
     // Auto-derive a sensible cost if left empty so the user never gets stuck on accounting math
     const unitCost =
       rawCost > 0 ? roundCup(rawCost) : roundCup(salePrice / ((1 + (config.indirect_cost_alloc_pct || 8) / 100) * 1.22));
-    const description = String(b.catalog_description || '').trim().slice(0, 240);
-    const imageUrl = String(b.image_url || '').trim().slice(0, 500);
+    const description = String(b.catalog_description || '').trim().slice(0, 320);
+    const compatibility = String(b.compatibility || '').trim().slice(0, 260);
+    const rawImg = String(b.image_url || '').trim();
+    if (rawImg.length > 750000) {
+      return res.status(400).json({ error: 'La foto supera el límite (máx. 800×800 WebP/JPEG).' });
+    }
+    const imageUrl = rawImg;
     const featured = b.catalog_featured ? 1 : 0;
 
     if (!name) return res.status(400).json({ error: 'Escribe el nombre del producto.' });
@@ -608,16 +681,17 @@ adminCatalogRouter.post(
         const ins = db
           .prepare(
             `INSERT INTO products
-             (sku, name, category, unit, unit_cost_cup, indirect_cost_pct, sale_price_cup,
+             (sku, name, category, compatibility, unit, unit_cost_cup, indirect_cost_pct, sale_price_cup,
               is_price_capped, is_margin_regulated, sales_tax_exempt,
               warehouse_stock, kiosk_stock, warehouse_min_stock, kiosk_min_stock, kiosk_target_stock,
               current_batch, catalog_visible, catalog_featured, catalog_description, image_url, active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, 5, 3, 15, 'LT-CAT', 1, ?, ?, ?, 1)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, 5, 3, 15, 'LT-CAT', 1, ?, ?, ?, 1)`
           )
           .run(
             sku,
             name,
             category,
+            compatibility,
             unit,
             unitCost,
             config.indirect_cost_alloc_pct || 8,

@@ -2,12 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeftRight,
   BookOpen,
+  Building2,
   Check,
-  ChevronDown,
   ClipboardList,
   Copy,
+  ExternalLink,
   Eye,
-  FileSpreadsheet,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -15,8 +15,8 @@ import {
   MessageCircle,
   Package,
   Receipt,
-  Repeat,
   Scale,
+  ShieldCheck,
   ShoppingCart,
   Sliders,
   Tag,
@@ -26,203 +26,108 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { ROLE_META } from '../lib/format.js';
+import { MENU_SCHEMA, buildUserPermissions } from '../lib/permissions.js';
 import { buildCatalogUrl } from '../lib/whatsapp.js';
 
-export function getNavForRole(role, badges = {}, config = null) {
-  const mods = config?.modules || {};
-  const perms = config?.permissions || {};
-  const isOn = (key) => mods[key] !== false;
-
-  if (role === 'jefe') {
-    const items = [
-      { id: 'jefe-home', label: 'Inicio', icon: LayoutDashboard, group: 'daily', mobilePin: true },
-    ];
-    if (isOn('pos')) {
-      items.push({ id: 'pos', label: 'Cobrar (Caja)', icon: ShoppingCart, group: 'daily', mobilePin: true });
-    }
-    if (isOn('catalog')) {
-      items.push({
-        id: 'catalog-wa',
-        label: 'Catálogo WhatsApp',
-        icon: MessageCircle,
-        badge: badges.pending_orders,
-        badgeTone: 'green',
-        group: 'daily',
-        mobilePin: true,
-      });
-    }
-    if (isOn('ipv')) {
-      items.push({
-        id: 'shift-ipv',
-        label: 'Turnos y Arqueo',
-        icon: ClipboardList,
-        badge: badges.unvalidated_shifts,
-        group: 'daily',
-      });
-    }
-    if (isOn('warehouse')) {
-      items.push({
-        id: 'warehouse',
-        label: 'Productos y Stock',
-        icon: Package,
-        badge: (badges.pending_restocks || 0) + (badges.pending_mermas || 0),
-        group: 'stock',
-        mobilePin: true,
-      });
-    }
-    if (isOn('pricing')) {
-      items.push({ id: 'pricing', label: 'Precios y Lista', icon: Tag, group: 'stock' });
-    }
-
-    items.push({ id: 'staff', label: 'Equipo y Horarios', icon: Users, group: 'company' });
-    items.push({
-      id: 'workspace-settings',
-      label: 'Mi Empresa y Modo',
-      icon: Sliders,
-      badge: badges.pending_affiliations,
-      group: 'company',
-    });
-
-    if (isOn('banking')) {
-      items.push({
-        id: 'banking',
-        label: 'Banco y Gastos',
-        icon: Landmark,
-        badge: badges.pending_deposits,
-        group: 'admin',
-      });
-    }
-    if (isOn('onat')) items.push({ id: 'onat', label: 'Impuestos (ONAT)', icon: Receipt, group: 'admin' });
-    if (isOn('payroll')) items.push({ id: 'payroll', label: 'Sueldos y Comisiones', icon: Wallet, group: 'admin' });
-    if (isOn('accounting')) items.push({ id: 'accounting', label: 'Contabilidad', icon: BookOpen, group: 'admin' });
-    if (isOn('compliance')) {
-      items.push({
-        id: 'compliance',
-        label: 'Inspección y Leyes',
-        icon: Scale,
-        badge: badges.compliance_critical,
-        group: 'admin',
-      });
-    }
-    return items;
-  }
-
-  if (role === 'economico') {
-    const items = [];
-    if (isOn('banking')) {
-      items.push({
-        id: 'banking',
-        label: 'Cobros QR y Banco',
-        icon: Landmark,
-        badge: (badges.pending_deposits || 0) + (badges.unreconciled_qr || 0),
-        group: 'daily',
-        mobilePin: true,
-      });
-    }
-    if (isOn('pricing')) items.push({ id: 'pricing', label: 'Precios y Fichas', icon: Tag, group: 'daily', mobilePin: true });
-    if (isOn('catalog')) items.push({ id: 'catalog-wa', label: 'Catálogo WhatsApp', icon: MessageCircle, group: 'daily' });
-    if (isOn('onat')) items.push({ id: 'onat', label: 'Impuestos (ONAT)', icon: Receipt, group: 'daily', mobilePin: true });
-    if (isOn('payroll')) items.push({ id: 'payroll', label: 'Sueldos', icon: Wallet, group: 'daily' });
-    if (isOn('accounting')) items.push({ id: 'accounting', label: 'Contabilidad', icon: BookOpen, group: 'daily', mobilePin: true });
-    if (isOn('ipv')) {
-      items.push({
-        id: 'shift-ipv',
-        label: 'Revisar Turnos',
-        icon: FileSpreadsheet,
-        badge: badges.unvalidated_shifts,
-        group: 'stock',
-      });
-    }
-    if (isOn('warehouse')) {
-      items.push({
-        id: 'warehouse',
-        label: 'Stock y Mermas',
-        icon: Package,
-        badge: perms.economico_approve_mermas !== false ? badges.pending_mermas : 0,
-        group: 'stock',
-      });
-    }
-    if (isOn('compliance')) {
-      items.push({
-        id: 'compliance',
-        label: 'Leyes e Inspección',
-        icon: Scale,
-        badge: badges.compliance_critical,
-        group: 'stock',
-      });
-    }
-    if (items.length === 0) {
-      items.push({ id: 'jefe-home', label: 'Inicio', icon: LayoutDashboard, group: 'daily', mobilePin: true });
-    }
-    return items;
-  }
-
-  if (role === 'almacenero') {
-    const items = [
-      {
-        id: 'warehouse',
-        label: 'Productos y Stock',
-        icon: Package,
-        badge: badges.pending_restocks,
-        group: 'daily',
-        mobilePin: true,
-      },
-    ];
-    if (isOn('catalog')) {
-      items.push({
-        id: 'catalog-wa',
-        label: 'Catálogo WhatsApp',
-        icon: MessageCircle,
-        badge: badges.pending_orders,
-        badgeTone: 'green',
-        group: 'daily',
-        mobilePin: true,
-      });
-    }
-    if (isOn('pricing') && perms.almacenero_view_pricelist !== false) {
-      items.push({ id: 'pricing', label: 'Precios y Lista', icon: Tag, group: 'daily', mobilePin: true });
-    }
-    if (isOn('compliance') && perms.almacenero_view_compliance !== false) {
-      items.push({ id: 'compliance', label: 'Normas y Vencimientos', icon: Scale, group: 'daily' });
-    }
-    return items;
-  }
-
-  // vendedor — ultra-clean 4-item bar!
-  const items = [
-    { id: 'pos', label: 'Cobrar (Caja)', icon: ShoppingCart, group: 'daily', mobilePin: true },
-  ];
-  if (isOn('catalog') && perms.vendedor_manage_orders !== false) {
-    items.push({
-      id: 'catalog-wa',
-      label: 'Pedidos WhatsApp',
-      icon: MessageCircle,
-      badge: badges.pending_orders,
-      badgeTone: 'green',
-      group: 'daily',
-      mobilePin: true,
-    });
-  }
-  if (isOn('ipv')) {
-    items.push({ id: 'shift-ipv', label: 'Mi Caja y Turno', icon: ClipboardList, group: 'daily', mobilePin: true });
-  }
-  if (isOn('pricing') && perms.vendedor_view_pricelist !== false) {
-    items.push({ id: 'pricing', label: 'Lista de Precios', icon: Tag, group: 'daily', mobilePin: true });
-  }
-  return items;
-}
-
-export function getDefaultPageForRole(role, badges = {}, config = null) {
-  const nav = getNavForRole(role, badges, config);
-  return nav[0]?.id || 'pos';
-}
-
-const GROUP_LABELS = {
-  daily: 'Día a día',
-  stock: 'Mercancía',
-  company: 'Tu negocio',
-  admin: 'Cuentas y ley',
+const ICON_BY_ID = {
+  'jefe-home': LayoutDashboard,
+  'workspace-settings': Sliders,
+  staff: Users,
+  pos: ShoppingCart,
+  'shift-ipv': ClipboardList,
+  warehouse: Package,
+  pricing: Tag,
+  'catalog-wa': MessageCircle,
+  banking: Landmark,
+  onat: Receipt,
+  payroll: Wallet,
+  accounting: BookOpen,
+  compliance: Scale,
 };
+
+const MOBILE_PRIORITY = ['jefe-home', 'pos', 'warehouse', 'catalog-wa', 'shift-ipv', 'pricing', 'banking', 'onat'];
+
+function computeBadgeForModule(id, badges = {}) {
+  switch (id) {
+    case 'workspace-settings':
+      return { count: Number(badges.pending_affiliations || 0), tone: 'amber' };
+    case 'shift-ipv':
+      return { count: Number(badges.unvalidated_shifts || 0), tone: 'amber' };
+    case 'warehouse':
+      return {
+        count: Number(badges.pending_restocks || 0) + Number(badges.pending_mermas || 0),
+        tone: 'amber',
+      };
+    case 'pricing':
+      return { count: Number(badges.pending_prices || 0), tone: 'amber' };
+    case 'catalog-wa':
+      return { count: Number(badges.pending_orders || 0), tone: 'green' };
+    case 'banking':
+      return {
+        count: Number(badges.pending_deposits || 0) + Number(badges.unreconciled_qr || 0),
+        tone: 'amber',
+      };
+    case 'compliance':
+      return { count: Number(badges.compliance_critical || 0), tone: 'red' };
+    default:
+      return { count: 0, tone: 'amber' };
+  }
+}
+
+/**
+ * Construye el menú lateral completo en orden empresarial exacto.
+ * - Jefe del Negocio: ve SIEMPRE los 13 módulos completos sin ocultar ni recortar ninguno.
+ * - Trabajadores: ven ÚNICAMENTE los módulos con `canView: true` según su matriz de permisos.
+ */
+export function getNavForUser(user, badges = {}, config = null) {
+  if (!user) return [];
+  const matrix = user.permissions_matrix?.items
+    ? user.permissions_matrix
+    : buildUserPermissions(user, config || {});
+
+  return MENU_SCHEMA.filter((m) => {
+    if (user.role === 'jefe') return true;
+    return Boolean(matrix.items?.[m.id]?.canView);
+  }).map((m) => {
+    const perm = matrix.items?.[m.id] || { canView: false, canEdit: false, canApprove: false };
+    const badgeInfo = computeBadgeForModule(m.id, badges);
+    return {
+      id: m.id,
+      label: m.label,
+      shortLabel: m.shortLabel,
+      group: m.group,
+      icon: ICON_BY_ID[m.id] || LayoutDashboard,
+      badge: badgeInfo.count,
+      badgeTone: badgeInfo.tone,
+      canView: perm.canView,
+      canEdit: perm.canEdit,
+      canApprove: perm.canApprove,
+      readOnly: Boolean(perm.canView && !perm.canEdit && !perm.canApprove),
+    };
+  });
+}
+
+// Retro-compatibilidad si algún módulo llama por rol
+export function getNavForRole(roleOrUser, badges = {}, config = null) {
+  const userObj = typeof roleOrUser === 'string' ? { role: roleOrUser } : roleOrUser;
+  return getNavForUser(userObj, badges, config);
+}
+
+export function getDefaultPageForRole(roleOrUser, badges = {}, config = null) {
+  const userObj = typeof roleOrUser === 'string' ? { role: roleOrUser } : roleOrUser;
+  const nav = getNavForUser(userObj, badges, config);
+  if (!nav.length) return 'pos';
+  const role = userObj?.role;
+  const preferredByRole = {
+    jefe: 'jefe-home',
+    vendedor: 'pos',
+    almacenero: 'warehouse',
+    economico: 'banking',
+  };
+  const pref = preferredByRole[role];
+  if (pref && nav.some((n) => n.id === pref)) return pref;
+  return nav[0].id;
+}
 
 export default function Layout({
   user,
@@ -235,32 +140,25 @@ export default function Layout({
   onPreviewCatalog,
   onSwitchUser,
   onOpenHub,
+  onStartAffiliate,
   onLogout,
   notify,
   children,
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [switchOpen, setSwitchOpen] = useState(false);
+  const [companyModalOpen, setCompanyModalOpen] = useState(false);
   const [roleUsers, setRoleUsers] = useState([]);
   const [copiedCat, setCopiedCat] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  const navItems = useMemo(() => getNavForRole(user.role, badges, config), [user.role, badges, config]);
-  const isInAdminGroup = useMemo(
-    () => navItems.some((i) => i.group === 'admin' && i.id === activePage),
-    [navItems, activePage]
-  );
-  const [adminOpen, setAdminOpen] = useState(false);
-
-  useEffect(() => {
-    if (isInAdminGroup) setAdminOpen(true);
-  }, [isInAdminGroup]);
+  const navItems = useMemo(() => getNavForUser(user, badges, config), [user, badges, config]);
 
   const roleMeta = ROLE_META[user.role] || ROLE_META.vendedor;
-  const companyCode = activeCompany?.company_code || config?.company_code || '';
+  const companyCode = activeCompany?.company_code || config?.company_code || 'kiosko-CEIBA1';
   const isDemo = Boolean(activeCompany?.is_demo);
   const canQuickSwitch = isDemo || user.role === 'jefe';
-  const catalogOn = config?.modules?.catalog !== false;
+  const catalogOn = config?.catalog_enabled !== 0 && config?.modules?.catalog !== false;
 
   useEffect(() => {
     if (!switchOpen || !canQuickSwitch) return;
@@ -275,12 +173,21 @@ export default function Layout({
     setMobileOpen(false);
   }
 
+  function handleCompaniesAction() {
+    setMobileOpen(false);
+    if (onOpenHub) {
+      onOpenHub();
+    } else {
+      setCompanyModalOpen(true);
+    }
+  }
+
   function handleCopyCatalogLink() {
     if (!companyCode) return;
     const url = buildCatalogUrl(companyCode);
     navigator.clipboard?.writeText(url);
     setCopiedCat(true);
-    notify?.('Link de tu catálogo copiado. Envíalo por WhatsApp a tus clientes.');
+    notify?.('Enlace público del catálogo copiado. Envíalo por WhatsApp a tus clientes.');
     setTimeout(() => setCopiedCat(false), 2200);
   }
 
@@ -288,319 +195,315 @@ export default function Layout({
     if (!companyCode) return;
     navigator.clipboard?.writeText(companyCode);
     setCopiedCode(true);
-    notify?.(`Código para empleados ${companyCode} copiado.`);
+    notify?.(`Código de empresa ${companyCode} copiado.`);
     setTimeout(() => setCopiedCode(false), 2000);
   }
 
-  const groupedSections = useMemo(() => {
-    const order = ['daily', 'stock', 'company', 'admin'];
-    return order
-      .map((key) => {
-        const items = navItems.filter((i) => (i.group || 'daily') === key);
-        const badgeTotal = items.reduce((s, i) => s + Number(i.badge || 0), 0);
-        return { key, label: GROUP_LABELS[key], items, badgeTotal };
-      })
-      .filter((g) => g.items.length > 0);
-  }, [navItems]);
-
   const mobileTabs = useMemo(() => {
-    const pinned = navItems.filter((i) => i.mobilePin).slice(0, 4);
-    return pinned.length > 0 ? pinned : navItems.slice(0, 4);
+    const ordered = MOBILE_PRIORITY.map((id) => navItems.find((i) => i.id === id)).filter(Boolean);
+    const merged = [...ordered, ...navItems.filter((i) => !ordered.includes(i))];
+    return merged.slice(0, 4);
   }, [navItems]);
 
   const renderNavItem = (item) => {
     const Icon = item.icon;
     const active = activePage === item.id;
-    const isGreenBadge = item.badgeTone === 'green';
+    const badgeColor =
+      item.badgeTone === 'green'
+        ? 'bg-[#1DA851] text-white'
+        : item.badgeTone === 'red'
+          ? 'bg-red-600 text-white'
+          : 'bg-[#C2542D] text-white';
+
     return (
       <button
         key={item.id}
         type="button"
+        data-nav-id={item.id}
         onClick={() => handleNav(item.id)}
-        className={`w-full flex items-center justify-between gap-2.5 rounded-xl px-3 py-2.5 text-[13px] font-semibold transition-all cursor-pointer ${
+        className={`w-full flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-[13px] font-semibold transition-all cursor-pointer ${
           active
             ? 'bg-[#181715] text-[#FAF8F4] shadow-xs'
-            : 'text-[#4A463F] hover:bg-[#EFECE4] hover:text-[#181715]'
+            : 'text-[#44403A] hover:bg-[#EFECE4] hover:text-[#181715]'
         }`}
       >
-        <span className="flex items-center gap-2.5 truncate">
+        <span className="flex items-center gap-2.5 min-w-0">
           <Icon
             className={`h-4 w-4 shrink-0 ${
               active
                 ? 'text-[#FAF8F4]'
                 : item.id === 'catalog-wa'
-                ? 'text-[#1DA851]'
-                : 'text-[#827B70]'
+                  ? 'text-[#1DA851]'
+                  : 'text-[#7C756A]'
             }`}
           />
           <span className="truncate">{item.label}</span>
         </span>
-        {Number(item.badge) > 0 && (
-          <span
-            className={`min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-extrabold flex items-center justify-center tabular-nums ${
-              isGreenBadge ? 'bg-[#1DA851] text-white' : 'bg-[#C2542D] text-white'
-            }`}
-          >
-            {item.badge}
-          </span>
-        )}
+        <span className="flex items-center gap-1 shrink-0">
+          {item.readOnly && !active && (
+            <span className="rounded bg-[#EFECE4] px-1.5 py-0.5 text-[9px] font-bold text-[#756E64]">
+              Ver
+            </span>
+          )}
+          {Number(item.badge) > 0 && (
+            <span
+              className={`min-w-[19px] h-[19px] px-1.5 rounded-full text-[10px] font-extrabold flex items-center justify-center tabular-nums ${badgeColor}`}
+            >
+              {item.badge}
+            </span>
+          )}
+        </span>
       </button>
     );
   };
 
   const sidebarContent = (
-    <div className="flex h-full flex-col bg-[#F6F3EC] border-r border-[#E7E1D6]">
-      {/* Brand + Company switcher */}
-      <div className="px-4 pt-4 pb-3 border-b border-[#E7E1D6] space-y-2.5">
+    <div className="flex h-full flex-col bg-[#F7F5F0] text-[#181715]">
+      {/* Identidad del negocio y código de empresa */}
+      <div className="px-4 pt-4 pb-3 border-b border-[#E6E1D6]">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="h-9 w-9 shrink-0 rounded-xl bg-[#181715] text-[#FAF8F4] flex items-center justify-center font-editorial text-lg">
-              {(config?.business_name || 'K').slice(0, 1)}
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#181715] text-[#FAF8F4] text-sm font-black tracking-tight">
+              {(activeCompany?.name || config?.business_name || 'K').slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-bold text-[#181715] truncate leading-tight">
-                {config?.business_name || 'Mi Kiosko'}
+              <p className="text-[13.5px] font-bold tracking-tight text-[#181715] truncate">
+                {activeCompany?.name || config?.business_name || 'Tu Comercio'}
               </p>
-              <p className="text-[11px] text-[#7A7368] truncate">
-                {user.full_name.split(' ')[0]} · {roleMeta.short}
-              </p>
+              <div className="flex items-center gap-1.5 text-[11px] text-[#756E64]">
+                <span className="truncate">{config?.legal_form || 'MIPYME'}</span>
+                <span>·</span>
+                <button
+                  type="button"
+                  onClick={handleCopyTeamCode}
+                  title="Copiar código único de empresa"
+                  className="inline-flex items-center gap-1 font-mono font-bold text-[#4A463F] hover:text-[#181715] cursor-pointer"
+                >
+                  {companyCode}
+                  {copiedCode ? (
+                    <Check className="h-2.5 w-2.5 text-emerald-700" />
+                  ) : (
+                    <Copy className="h-2.5 w-2.5 opacity-70" />
+                  )}
+                </button>
+              </div>
             </div>
           </div>
-          {account && onOpenHub && (
+          {mobileOpen && (
             <button
               type="button"
-              onClick={onOpenHub}
-              title="Cambiar de empresa o crear otra"
-              className="shrink-0 rounded-full border border-[#DDD6C8] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#4A463F] hover:text-[#181715] hover:border-[#BDB4A3] inline-flex items-center gap-1 cursor-pointer"
+              onClick={() => setMobileOpen(false)}
+              aria-label="Cerrar menú"
+              className="lg:hidden rounded-lg p-1.5 text-[#6E685F] hover:bg-[#EFECE4] cursor-pointer"
             >
-              <ArrowLeftRight className="h-3 w-3" />
-              Empresas
+              <X className="h-4 w-4" />
             </button>
           )}
         </div>
 
-        {/* 1-Click Customer Catalog Mini Bar — always at your fingertips! */}
-        {catalogOn && companyCode && onPreviewCatalog && (
-          <div className="rounded-xl bg-white border border-[#E2DCD0] p-2 flex items-center justify-between gap-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                setMobileOpen(false);
-                onPreviewCatalog(companyCode);
-              }}
-              className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#E6F5EF] hover:bg-[#D5EDE3] text-[#15614B] text-[11px] font-bold py-1.5 px-2.5 transition cursor-pointer"
-            >
-              <Eye className="h-3.5 w-3.5" />
-              Ver catálogo
-            </button>
-            <button
-              type="button"
-              onClick={handleCopyCatalogLink}
-              className="inline-flex items-center justify-center gap-1 rounded-lg bg-[#FAF8F4] hover:bg-[#EFECE4] text-[#3F3C37] text-[11px] font-semibold py-1.5 px-2.5 border border-[#E7E1D6] transition cursor-pointer"
-              title="Copiar enlace del catálogo para clientes"
-            >
-              {copiedCat ? <Check className="h-3.5 w-3.5 text-[#15614B]" /> : <Copy className="h-3.5 w-3.5" />}
-              {copiedCat ? 'Listo' : 'Link'}
-            </button>
+        {/* Acceso rápido al Catálogo público de clientes */}
+        {catalogOn && companyCode && (
+          <div className="mt-2.5 rounded-xl bg-white border border-[#E4DFD3] px-2.5 py-2 flex items-center justify-between gap-1.5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#14793B]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#1DA851]" />
+                <span>Catálogo público</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={handleCopyCatalogLink}
+                title="Copiar enlace para WhatsApp"
+                className="inline-flex items-center gap-1 rounded-lg bg-[#1DA851] hover:bg-[#188F44] text-white px-2 py-1 text-[10.5px] font-bold cursor-pointer transition-colors"
+              >
+                {copiedCat ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                {copiedCat ? 'Copiado' : 'Link'}
+              </button>
+              {onPreviewCatalog && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileOpen(false);
+                    onPreviewCatalog(companyCode);
+                  }}
+                  title="Ver catálogo como cliente"
+                  className="inline-flex items-center gap-1 rounded-lg bg-[#EFECE4] hover:bg-[#E4DFD3] text-[#181715] px-2 py-1 text-[10.5px] font-semibold cursor-pointer"
+                >
+                  <Eye className="h-3 w-3" />
+                  Ver
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Grouped, super-clear Navigation */}
-      <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
-        {groupedSections.map((sec) => {
-          const isCollapsible = sec.key === 'admin' && user.role === 'jefe';
-          if (isCollapsible) {
-            return (
-              <div key={sec.key} className="space-y-1">
-                <button
-                  type="button"
-                  onClick={() => setAdminOpen((v) => !v)}
-                  className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#8A8379] hover:text-[#181715] cursor-pointer"
-                >
-                  <span className="flex items-center gap-1.5">
-                    {sec.label}
-                    {sec.badgeTotal > 0 && (
-                      <span className="rounded-full bg-[#C2542D] text-white px-1.5 py-0.2 text-[9px] font-extrabold">
-                        {sec.badgeTotal}
-                      </span>
-                    )}
-                  </span>
-                  <ChevronDown
-                    className={`h-3.5 w-3.5 transition-transform ${adminOpen ? 'rotate-180' : ''}`}
-                  />
-                </button>
-                {adminOpen && <div className="space-y-0.5">{sec.items.map(renderNavItem)}</div>}
-              </div>
-            );
-          }
+      {/* Navegación empresarial completa (filtrada estrictamente por permisos del usuario) */}
+      <nav aria-label="Menú principal del negocio" className="flex-1 overflow-y-auto px-2.5 py-2.5 space-y-0.5">
+        {navItems.map(renderNavItem)}
 
-          return (
-            <div key={sec.key} className="space-y-1">
-              {groupedSections.length > 1 && (
-                <p className="px-3 text-[10px] font-bold uppercase tracking-wider text-[#968F84]">
-                  {sec.label}
-                </p>
-              )}
-              <div className="space-y-0.5">{sec.items.map(renderNavItem)}</div>
-            </div>
-          );
-        })}
+        {/* Separador — Acciones de cuenta y empresa */}
+        <div className="pt-2 mt-2 border-t border-[#E6E1D6] space-y-0.5">
+          <button
+            type="button"
+            data-nav-id="companies-hub"
+            onClick={handleCompaniesAction}
+            className="w-full flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-[13px] font-semibold text-[#44403A] hover:bg-[#EFECE4] hover:text-[#181715] transition-all cursor-pointer"
+          >
+            <span className="flex items-center gap-2.5 min-w-0">
+              <Building2 className="h-4 w-4 shrink-0 text-[#7C756A]" />
+              <span className="truncate">Mis empresas / Afiliarme</span>
+            </span>
+            <span className="rounded bg-[#ECE8DE] px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-[#5E584E] shrink-0">
+              {companyCode.replace(/^kiosko-/i, '')}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            data-nav-id="logout"
+            onClick={() => {
+              setMobileOpen(false);
+              onLogout();
+            }}
+            className="w-full flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-[13px] font-semibold text-[#7A3520] hover:bg-red-50 hover:text-red-700 transition-all cursor-pointer"
+          >
+            <LogOut className="h-4 w-4 shrink-0" />
+            <span className="truncate">Cerrar sesión</span>
+          </button>
+        </div>
       </nav>
 
-      {/* Clean Footer: Shift status + Team code + Role switcher + Logout */}
-      <div className="p-3 border-t border-[#E7E1D6] space-y-2">
-        {companyCode && user.role === 'jefe' && (
-          <button
-            type="button"
-            onClick={handleCopyTeamCode}
-            className="w-full flex items-center justify-between rounded-xl bg-[#EFECE4]/70 hover:bg-[#EAE5DA] px-3 py-2 text-[11px] text-[#5E584F] transition cursor-pointer"
-            title="Copiar código para afiliar empleados"
-          >
-            <span>
-              Código equipo: <strong className="font-mono text-[#181715]">{companyCode}</strong>
-            </span>
-            {copiedCode ? (
-              <Check className="h-3.5 w-3.5 text-[#15614B]" />
-            ) : (
-              <Copy className="h-3.5 w-3.5 text-[#8A8379]" />
-            )}
-          </button>
-        )}
-
-        <div className="flex items-center gap-1.5">
-          {canQuickSwitch && (
-            <div className="relative flex-1">
-              <button
-                type="button"
-                onClick={() => setSwitchOpen((v) => !v)}
-                className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#DDD6C8] bg-white hover:bg-[#FAF8F4] px-2.5 py-2 text-xs font-semibold text-[#3F3C37] cursor-pointer"
-              >
-                <Repeat className="h-3.5 w-3.5 text-[#7A7368]" />
-                {isDemo ? 'Probar rol' : 'Ver como rol'}
-              </button>
-
-              {switchOpen && roleUsers.length > 0 && (
-                <div className="absolute bottom-full left-0 mb-2 w-60 rounded-2xl bg-white border border-[#E7E1D6] shadow-xl p-2 z-50 space-y-1">
-                  <p className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[#8A8379]">
-                    Cambiar vista de puesto
-                  </p>
-                  {roleUsers.map((ru) => (
-                    <button
-                      key={ru.id}
-                      type="button"
-                      onClick={() => {
-                        setSwitchOpen(false);
-                        setMobileOpen(false);
-                        onSwitchUser?.(ru.id);
-                      }}
-                      className={`w-full rounded-xl px-2.5 py-2 text-left text-xs flex items-center justify-between cursor-pointer ${
-                        ru.id === user.id
-                          ? 'bg-[#181715] text-white font-semibold'
-                          : 'hover:bg-[#F3EFE7] text-[#2E2C28]'
-                      }`}
-                    >
-                      <span className="truncate">{ru.full_name}</span>
-                      <span
-                        className={`text-[10px] ml-2 shrink-0 ${
-                          ru.id === user.id ? 'text-[#C8C2B7]' : 'text-[#8A8379]'
-                        }`}
-                      >
-                        {ROLE_META[ru.role]?.short || ru.role}
-                        {ru.default_register ? ` C${ru.default_register}` : ''}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+      {/* Pie con usuario activo + cambio rápido de perfil (demo o Jefe probando permisos) */}
+      <div className="px-3 py-2.5 border-t border-[#E6E1D6] bg-[#F2EFE8]">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <p className="text-[12px] font-bold text-[#181715] truncate">{user.full_name}</p>
+              {user.role === 'jefe' && (
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-700" title="Acceso total (Jefe)" />
               )}
             </div>
+            <p className="text-[10.5px] text-[#756E64] truncate">
+              {roleMeta.short}
+              {user.role !== 'jefe' ? ` · ${navItems.length} módulos` : ' · Acceso total'}
+              {user.shift_name ? ` · ${user.shift_name}` : ''}
+            </p>
+          </div>
+          {canQuickSwitch && (
+            <button
+              type="button"
+              onClick={() => setSwitchOpen(true)}
+              title={isDemo ? 'Probar otro rol del negocio' : 'Ver cómo ve el sistema otro trabajador'}
+              className="inline-flex items-center gap-1 rounded-lg bg-white border border-[#DED9CD] hover:border-[#181715] px-2 py-1 text-[10.5px] font-bold text-[#181715] cursor-pointer shrink-0"
+            >
+              <ArrowLeftRight className="h-3 w-3" />
+              Rol
+            </button>
           )}
-
-          <button
-            type="button"
-            onClick={onLogout}
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#DDD6C8] bg-white hover:bg-[#FBEAEA] hover:text-[#9E2A2B] hover:border-[#E6B8B8] px-3 py-2 text-xs font-semibold text-[#5E584F] transition cursor-pointer"
-            title="Cerrar sesión"
-          >
-            <LogOut className="h-3.5 w-3.5" />
-            <span>Salir</span>
-          </button>
         </div>
       </div>
     </div>
   );
 
+  const currentNav = navItems.find((i) => i.id === activePage);
+  const currentTitle = currentNav?.label || 'Inicio del Negocio';
+
   return (
-    <div className="min-h-screen bg-[#FAF8F4] text-[#181715] flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden lg:block w-64 shrink-0 sticky top-0 h-screen no-print">
+    <div className="min-h-screen flex bg-[#FAF8F4] text-[#181715]">
+      {/* Barra lateral fija en escritorio */}
+      <aside className="hidden lg:block lg:w-[258px] lg:shrink-0 border-r border-[#E6E1D6] sticky top-0 h-screen">
         {sidebarContent}
       </aside>
 
-      {/* Mobile Drawer */}
+      {/* Menú deslizable en móvil */}
       {mobileOpen && (
-        <div
-          className="fixed inset-0 z-50 bg-black/45 lg:hidden no-print"
-          onClick={() => setMobileOpen(false)}
-        >
+        <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="h-full w-72 max-w-[85vw] shadow-2xl relative"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              onClick={() => setMobileOpen(false)}
-              className="absolute top-3.5 right-3 z-10 h-8 w-8 rounded-full bg-white border border-[#E7E1D6] flex items-center justify-center text-[#181715]"
-              aria-label="Cerrar menú"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            className="fixed inset-0 bg-black/40 backdrop-blur-[1px]"
+            onClick={() => setMobileOpen(false)}
+          />
+          <div className="relative z-10 w-[285px] max-w-[86vw] h-full shadow-2xl">
             {sidebarContent}
           </div>
         </div>
       )}
 
-      {/* Main Content */}
+      {/* Área principal */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Mobile Top Bar */}
-        <header className="lg:hidden sticky top-0 z-30 bg-[#FAF8F4]/95 backdrop-blur-md border-b border-[#E7E1D6] px-4 py-2.5 flex items-center justify-between gap-2 no-print">
+        {/* Cabecera superior compacta */}
+        <header className="sticky top-0 z-30 h-14 bg-[#FAF8F4]/92 backdrop-blur-md border-b border-[#E6E1D6] px-4 sm:px-6 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => setMobileOpen(true)}
-              className="h-9 w-9 rounded-xl bg-white border border-[#E7E1D6] flex items-center justify-center text-[#181715]"
               aria-label="Abrir menú"
+              className="lg:hidden rounded-xl p-2 -ml-1.5 text-[#181715] hover:bg-[#EFECE4] cursor-pointer"
             >
-              <Menu className="h-4 w-4" />
+              <Menu className="h-5 w-5" />
             </button>
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-[#181715] truncate">
-                {config?.business_name || 'Mi Kiosko'}
-              </p>
-              <p className="text-[10px] text-[#7A7368] truncate">
-                {badges?.active_shift ? `● ${badges.active_shift.shift_name} abierto` : roleMeta.label}
-              </p>
-            </div>
+            <h1 className="text-[15px] sm:text-base font-bold tracking-tight text-[#181715] truncate">
+              {currentTitle}
+            </h1>
+            {currentNav?.readOnly && (
+              <span className="hidden sm:inline-flex items-center rounded-full bg-stone-200/80 px-2 py-0.5 text-[10.5px] font-bold text-stone-700">
+                Solo consulta
+              </span>
+            )}
+            {isDemo && (
+              <span className="hidden md:inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                Demo · {companyCode}
+              </span>
+            )}
           </div>
 
-          {catalogOn && companyCode && onPreviewCatalog && (
-            <button
-              type="button"
-              onClick={() => onPreviewCatalog(companyCode)}
-              className="shrink-0 inline-flex items-center gap-1.5 rounded-full bg-[#E6F5EF] text-[#15614B] px-3 py-1.5 text-xs font-bold"
-            >
-              <Eye className="h-3.5 w-3.5" />
-              Catálogo
-            </button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {badges.active_shift ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (navItems.some((n) => n.id === 'shift-ipv')) handleNav('shift-ipv');
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-1 text-[11px] font-semibold text-emerald-900 cursor-pointer"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="hidden sm:inline">{badges.active_shift.shift_name}</span>
+                <span>
+                  · {badges.active_shift.open_registers} caja
+                  {badges.active_shift.open_registers === 1 ? '' : 's'}
+                </span>
+              </button>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#EFECE4] px-2.5 py-1 text-[11px] font-medium text-[#6E685F]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#9E9689]" />
+                Turno cerrado
+              </span>
+            )}
+
+            {canQuickSwitch && (
+              <button
+                type="button"
+                onClick={() => setSwitchOpen(true)}
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-white border border-[#E2DDD1] hover:border-[#181715] px-2.5 py-1 text-[11px] font-semibold text-[#181715] transition-colors cursor-pointer"
+              >
+                <ArrowLeftRight className="h-3 w-3 text-[#756E64]" />
+                <span>{roleMeta.short}</span>
+              </button>
+            )}
+          </div>
         </header>
 
-        <main className="flex-1 px-4 sm:px-6 lg:px-8 py-5 sm:py-7 pb-24 lg:pb-8 max-w-7xl w-full mx-auto">
+        {/* Contenido */}
+        <main className="flex-1 p-4 sm:p-6 lg:p-7 pb-24 lg:pb-10 max-w-[1440px] w-full mx-auto">
           {children}
         </main>
 
-        {/* Mobile Bottom Tab Bar — effortless 1-thumb operation! */}
-        <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/98 backdrop-blur-md border-t border-[#E7E1D6] px-2 py-1.5 flex items-center justify-around no-print">
+        {/* Navegación inferior móvil */}
+        <nav
+          aria-label="Accesos rápidos móviles"
+          className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t border-[#E6E1D6] px-1.5 py-1 flex items-center justify-around"
+        >
           {mobileTabs.map((item) => {
             const Icon = item.icon;
             const active = activePage === item.id;
@@ -609,8 +512,8 @@ export default function Layout({
                 key={item.id}
                 type="button"
                 onClick={() => handleNav(item.id)}
-                className={`relative flex flex-col items-center justify-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-bold transition ${
-                  active ? 'text-[#181715]' : 'text-[#8A8379]'
+                className={`relative flex flex-col items-center justify-center gap-0.5 rounded-xl px-2 py-1.5 min-w-[58px] text-[10px] font-semibold cursor-pointer ${
+                  active ? 'text-[#181715]' : 'text-[#827B70]'
                 }`}
               >
                 <Icon
@@ -618,9 +521,13 @@ export default function Layout({
                     active ? 'text-[#181715]' : item.id === 'catalog-wa' ? 'text-[#1DA851]' : ''
                   }`}
                 />
-                <span className="truncate max-w-[68px]">{item.label.split(' ')[0]}</span>
+                <span className="truncate max-w-[66px]">{item.shortLabel || item.label}</span>
                 {Number(item.badge) > 0 && (
-                  <span className="absolute top-0.5 right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-[#1DA851] text-white text-[9px] font-extrabold flex items-center justify-center">
+                  <span
+                    className={`absolute top-0.5 right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-extrabold text-white flex items-center justify-center ${
+                      item.badgeTone === 'green' ? 'bg-[#1DA851]' : 'bg-[#C2542D]'
+                    }`}
+                  >
                     {item.badge}
                   </span>
                 )}
@@ -630,13 +537,153 @@ export default function Layout({
           <button
             type="button"
             onClick={() => setMobileOpen(true)}
-            className="flex flex-col items-center justify-center gap-0.5 px-2.5 py-1 rounded-xl text-[10px] font-bold text-[#8A8379]"
+            className="flex flex-col items-center justify-center gap-0.5 rounded-xl px-2 py-1.5 min-w-[54px] text-[10px] font-semibold text-[#827B70] cursor-pointer"
           >
             <Menu className="h-5 w-5" />
-            <span>Más</span>
+            <span>Menú</span>
           </button>
         </nav>
       </div>
+
+      {/* Modal: Mis empresas / Afiliarme (cuando no hay cuenta Conecta multiempresa activa) */}
+      {companyModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[1px] p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-[#E6E1D6] overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#EFECE4]">
+              <div>
+                <h3 className="text-sm font-bold text-[#181715]">Mis empresas / Afiliarme</h3>
+                <p className="text-xs text-[#756E64]">
+                  Código único de vinculación y acceso multiempresa Conecta
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompanyModalOpen(false)}
+                className="rounded-lg p-1.5 text-[#756E64] hover:bg-[#EFECE4] cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="rounded-xl bg-[#F7F5F0] border border-[#E4DFD3] p-4">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[#756E64]">
+                  Empresa activa en esta sesión
+                </p>
+                <p className="text-base font-extrabold text-[#181715] mt-0.5">
+                  {activeCompany?.name || config?.business_name}
+                </p>
+                <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-white border border-[#DED9CD] px-3 py-2">
+                  <div>
+                    <p className="text-[10px] font-semibold text-[#756E64]">
+                      Código para afiliar trabajadores
+                    </p>
+                    <p className="font-mono text-sm font-black text-[#181715]">{companyCode}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyTeamCode}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#181715] text-white px-3 py-1.5 text-xs font-bold hover:bg-stone-800 cursor-pointer"
+                  >
+                    {copiedCode ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copiedCode ? 'Copiado' : 'Copiar código'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-[#6E685F] mt-2">
+                  Comparte este código con tus empleados para que se afilien a tu negocio con su correo, o úsalo en{' '}
+                  <strong>Afiliarme</strong> para unirte a otra empresa.
+                </p>
+              </div>
+
+              {onStartAffiliate && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompanyModalOpen(false);
+                      onStartAffiliate('affiliate');
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#181715] text-white px-3.5 py-2.5 text-xs font-bold hover:bg-stone-800 cursor-pointer"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Afiliarme con código
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompanyModalOpen(false);
+                      onStartAffiliate('create');
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#EFECE4] text-[#181715] px-3.5 py-2.5 text-xs font-bold hover:bg-[#E4DFD3] cursor-pointer"
+                  >
+                    <Building2 className="h-3.5 w-3.5" />
+                    Crear / Cambiar empresa
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Cambio rápido de perfil (para probar permisos de cada trabajador en vivo) */}
+      {switchOpen && canQuickSwitch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[1px] p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-[#E6E1D6] overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#EFECE4]">
+              <div>
+                <h3 className="text-sm font-bold text-[#181715]">
+                  {isDemo ? 'Cambiar perfil de trabajo' : 'Probar vista y permisos por trabajador'}
+                </h3>
+                <p className="text-xs text-[#756E64]">
+                  Cada trabajador ve únicamente los módulos y datos autorizados por el Jefe.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSwitchOpen(false)}
+                className="rounded-lg p-1.5 text-[#756E64] hover:bg-[#EFECE4] cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-3 max-h-[65vh] overflow-y-auto space-y-1">
+              {roleUsers.map((u) => {
+                const rm = ROLE_META[u.role] || ROLE_META.vendedor;
+                const isMe = u.id === user.id;
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={async () => {
+                      setSwitchOpen(false);
+                      await onSwitchUser(u.id);
+                    }}
+                    className={`w-full flex items-center justify-between gap-3 rounded-xl px-3.5 py-2.5 text-left transition-all cursor-pointer ${
+                      isMe ? 'bg-[#181715] text-white' : 'hover:bg-[#F7F5F0] text-[#181715]'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold truncate">{u.full_name}</p>
+                      <p className={`text-[11px] truncate ${isMe ? 'text-white/75' : 'text-[#756E64]'}`}>
+                        {rm.label}
+                        {u.shift_name ? ` · ${u.shift_name}` : ''}
+                        {u.active_register ? ` · Caja #${u.active_register} abierta` : ''}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                        isMe ? 'bg-white/20 text-white' : 'bg-[#EFECE4] text-[#4A463F]'
+                      }`}
+                    >
+                      {isMe ? 'Activo' : 'Entrar'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

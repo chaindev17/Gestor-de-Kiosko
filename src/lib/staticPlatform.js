@@ -1153,9 +1153,15 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
     Object.assign(ts.config, rest);
     if (modules) ts.config.modules = { ...ts.config.modules, ...modules, pos: true };
     if (permissions) ts.config.permissions = { ...ts.config.permissions, ...permissions };
-    ['flexible_role_limits', 'require_cuban_ci', 'owner_can_operate_pos', 'auto_restock_enabled', 'auto_accounting_enabled', 'auto_deposit_order_enabled', 'strict_price_cap_block', 'strict_bancarizacion_block'].forEach((k) => {
+    ['flexible_role_limits', 'require_cuban_ci', 'owner_can_operate_pos', 'auto_restock_enabled', 'auto_accounting_enabled', 'auto_deposit_order_enabled', 'strict_price_cap_block', 'strict_bancarizacion_block', 'strict_ipv_control', 'show_fx_reference', 'catalog_enabled', 'catalog_show_out_of_stock', 'catalog_show_stock_qty', 'catalog_allow_backorder'].forEach((k) => {
       if (body[k] !== undefined) ts.config[k] = body[k] ? 1 : 0;
     });
+    if (body.operation_mode === 'SOLO_POS') ts.config.catalog_enabled = 0;
+    else if (body.operation_mode === 'POS_CATALOGO' || body.operation_mode === 'SOLO_CATALOGO') ts.config.catalog_enabled = 1;
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    if (body.rate_usd_cup !== undefined) ts.config.rate_usd_cup = Math.max(1, round2(body.rate_usd_cup));
+    if (body.rate_mlc_cup !== undefined) ts.config.rate_mlc_cup = Math.max(1, round2(body.rate_mlc_cup));
+    if (body.rate_eur_cup !== undefined) ts.config.rate_eur_cup = Math.max(1, round2(body.rate_eur_cup));
     curComp.name = ts.config.business_name;
     curComp.business_type = ts.config.business_type;
     curComp.legal_form = ts.config.legal_form;
@@ -1264,16 +1270,19 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
           sku: pr.sku,
           name: pr.name,
           category: pr.category,
+          compatibility: pr.compatibility || '',
           unit: pr.unit,
           sale_price_cup: r2(pr.sale_price_cup),
           available_stock: av,
+          show_stock_qty: Boolean(cfg.catalog_show_stock_qty),
+          stock_label: av > 0 ? 'Disponible' : cfg.catalog_allow_backorder ? 'Por encargo' : 'Agotado',
           in_stock: inStock,
           catalog_featured: Boolean(pr.catalog_featured),
           catalog_description: pr.catalog_description || '',
           image_url: pr.image_url || '',
         };
       })
-      .filter((pr) => pr.in_stock || Boolean(cfg.catalog_show_out_of_stock))
+      .filter((pr) => pr.in_stock || Boolean(cfg.catalog_show_out_of_stock ?? 1))
       .sort((a, b) => Number(b.catalog_featured) - Number(a.catalog_featured) || a.name.localeCompare(b.name));
 
     return {
@@ -1295,7 +1304,8 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
         catalog_delivery_fee_cup: r2(cfg.catalog_delivery_fee_cup ?? 0),
         catalog_free_delivery_from_cup: r2(cfg.catalog_free_delivery_from_cup ?? 0),
         catalog_min_order_cup: r2(cfg.catalog_min_order_cup ?? 0),
-        catalog_show_out_of_stock: Boolean(cfg.catalog_show_out_of_stock ?? 0),
+        catalog_show_out_of_stock: Boolean(cfg.catalog_show_out_of_stock ?? 1),
+        catalog_show_stock_qty: Boolean(cfg.catalog_show_stock_qty ?? 0),
         catalog_allow_backorder: Boolean(cfg.catalog_allow_backorder ?? 0),
         qr_discount_pct: r2(cfg.qr_discount_pct ?? 0),
         has_transfermovil: Boolean(cfg.transfermovil_merchant_code || cfg.transfermovil_phone),
@@ -1455,14 +1465,22 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
             customer_whatsapp_url: o.customer_phone ? buildWhatsappUrl(o.customer_phone, reply) : '',
           };
         });
+      const activeU = enrichUser(ts, (ts.users || []).find((x) => x.id === plat.session.userId));
+      const canSeeCost = !activeU || activeU.role === 'jefe' || Boolean(activeU.permissions_matrix?.flags?.view_costs);
       const products = (ts.products || [])
         .filter((pr) => pr.active !== 0)
-        .map((pr) => ({
-          ...pr,
-          available_stock: availStock(pr, cfg),
-          catalog_visible: pr.catalog_visible !== 0,
-          catalog_featured: Boolean(pr.catalog_featured),
-        }));
+        .map((pr) => {
+          const av = availStock(pr, cfg);
+          return {
+            ...pr,
+            compatibility: pr.compatibility || '',
+            unit_cost_cup: canSeeCost ? pr.unit_cost_cup : null,
+            available_stock: av,
+            in_stock: av > 0,
+            catalog_visible: pr.catalog_visible !== 0,
+            catalog_featured: Boolean(pr.catalog_featured),
+          };
+        });
       const delivered = orders.filter((o) => o.status === 'ENTREGADO');
       return {
         company_code: targetComp.company_code,
@@ -1478,7 +1496,8 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
           catalog_delivery_fee_cup: r2(cfg.catalog_delivery_fee_cup ?? 0),
           catalog_free_delivery_from_cup: r2(cfg.catalog_free_delivery_from_cup ?? 0),
           catalog_min_order_cup: r2(cfg.catalog_min_order_cup ?? 0),
-          catalog_show_out_of_stock: Boolean(cfg.catalog_show_out_of_stock ?? 0),
+          catalog_show_out_of_stock: Boolean(cfg.catalog_show_out_of_stock ?? 1),
+          catalog_show_stock_qty: Boolean(cfg.catalog_show_stock_qty ?? 0),
           catalog_allow_backorder: Boolean(cfg.catalog_allow_backorder ?? 0),
           catalog_stock_source: cfg.catalog_stock_source || 'BOTH',
           qr_discount_pct: r2(cfg.qr_discount_pct ?? 0),
@@ -1505,7 +1524,7 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
       if (body.catalog_welcome !== undefined) cfg.catalog_welcome = String(body.catalog_welcome).trim();
       if (body.catalog_hours !== undefined) cfg.catalog_hours = String(body.catalog_hours).trim();
       if (body.catalog_stock_source) cfg.catalog_stock_source = body.catalog_stock_source;
-      ['catalog_enabled', 'catalog_allow_pickup', 'catalog_allow_delivery', 'catalog_show_out_of_stock', 'catalog_allow_backorder'].forEach((k) => {
+      ['catalog_enabled', 'catalog_allow_pickup', 'catalog_allow_delivery', 'catalog_show_out_of_stock', 'catalog_show_stock_qty', 'catalog_allow_backorder'].forEach((k) => {
         if (body[k] !== undefined) cfg[k] = body[k] ? 1 : 0;
       });
       ['catalog_delivery_fee_cup', 'catalog_free_delivery_from_cup', 'catalog_min_order_cup'].forEach((k) => {
@@ -1530,6 +1549,7 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
         sku: `CAT-${String(nextId).padStart(4, '0')}`,
         name,
         category: String(body.category || 'General').trim() || 'General',
+        compatibility: String(body.compatibility || '').trim(),
         unit: String(body.unit || 'u').trim() || 'u',
         unit_cost_cup: unitCost,
         indirect_cost_pct: cfg.indirect_cost_alloc_pct || 8,
@@ -1562,6 +1582,7 @@ export function handleStaticPlatformApi(method, rawPath, body = {}) {
       if (!pr) throw new Error('Producto no encontrado.');
       if (body.name !== undefined && String(body.name).trim()) pr.name = String(body.name).trim();
       if (body.category !== undefined && String(body.category).trim()) pr.category = String(body.category).trim();
+      if (body.compatibility !== undefined) pr.compatibility = String(body.compatibility).trim();
       if (body.sale_price_cup !== undefined && r2(body.sale_price_cup) > 0) pr.sale_price_cup = r2(body.sale_price_cup);
       if (body.catalog_visible !== undefined) pr.catalog_visible = body.catalog_visible ? 1 : 0;
       if (body.catalog_featured !== undefined) pr.catalog_featured = body.catalog_featured ? 1 : 0;

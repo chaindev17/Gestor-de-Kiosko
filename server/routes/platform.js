@@ -1090,6 +1090,13 @@ router.put('/company/governance', requireAuth, requireRole('jefe'), (req, res) =
     5,
     Number(body.max_regulated_margin_pct ?? current.max_regulated_margin_pct)
   );
+  const allowedOpModes = ['SOLO_POS', 'POS_CATALOGO', 'SOLO_CATALOGO', 'MULTICAJA'];
+  const nextOpMode = allowedOpModes.includes(body.operation_mode)
+    ? body.operation_mode
+    : current.operation_mode || 'POS_CATALOGO';
+  const nextRateUsd = Math.max(1, roundCup(body.rate_usd_cup ?? current.rate_usd_cup ?? 320));
+  const nextRateMlc = Math.max(1, roundCup(body.rate_mlc_cup ?? current.rate_mlc_cup ?? 275));
+  const nextRateEur = Math.max(1, roundCup(body.rate_eur_cup ?? current.rate_eur_cup ?? 340));
 
   db.prepare(
     `UPDATE business_config SET
@@ -1124,6 +1131,16 @@ router.put('/company/governance', requireAuth, requireRole('jefe'), (req, res) =
        auto_deposit_order_enabled = ?,
        strict_price_cap_block = ?,
        strict_bancarizacion_block = ?,
+       operation_mode = ?,
+       strict_ipv_control = ?,
+       rate_usd_cup = ?,
+       rate_mlc_cup = ?,
+       rate_eur_cup = ?,
+       show_fx_reference = ?,
+       catalog_enabled = ?,
+       catalog_show_out_of_stock = ?,
+       catalog_show_stock_qty = ?,
+       catalog_allow_backorder = ?,
        updated_at = datetime('now')
      WHERE id = 1`
   ).run(
@@ -1157,7 +1174,21 @@ router.put('/company/governance', requireAuth, requireRole('jefe'), (req, res) =
     pickBool('auto_accounting_enabled'),
     pickBool('auto_deposit_order_enabled'),
     pickBool('strict_price_cap_block'),
-    pickBool('strict_bancarizacion_block')
+    pickBool('strict_bancarizacion_block'),
+    nextOpMode,
+    pickBool('strict_ipv_control'),
+    nextRateUsd,
+    nextRateMlc,
+    nextRateEur,
+    pickBool('show_fx_reference'),
+    body.operation_mode === 'SOLO_POS'
+      ? 0
+      : body.operation_mode === 'POS_CATALOGO' || body.operation_mode === 'SOLO_CATALOGO'
+        ? 1
+        : pickBool('catalog_enabled'),
+    pickBool('catalog_show_out_of_stock'),
+    pickBool('catalog_show_stock_qty'),
+    pickBool('catalog_allow_backorder')
   );
 
   db.prepare('UPDATE shift_templates SET required_sellers = ? WHERE active = 1').run(nextMaxSellers);

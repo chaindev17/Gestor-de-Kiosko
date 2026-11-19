@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { api, isStaticBackend } from '../lib/api.js';
 import { formatCup, formatDateTime, formatNumber } from '../lib/format.js';
+import { hasPermissionFlag } from '../lib/permissions.js';
 import {
   ORDER_STATUS_META,
   PAYMENT_LABELS,
@@ -35,6 +36,7 @@ import {
 } from '../lib/whatsapp.js';
 import QrCodeBadge from '../components/QrCodeBadge.jsx';
 import Modal from '../components/Modal.jsx';
+import ImagePickerField from '../components/ImagePickerField.jsx';
 
 const DEFAULT_CATEGORIES = [
   'Cárnicos y Embutidos',
@@ -49,12 +51,16 @@ const DEFAULT_CATEGORIES = [
 
 export default function CatalogWhatsappPage({
   user,
+  config,
   initialTab = 'orders',
   onPreviewCatalog,
   onRefreshBadges,
   onConfigUpdated,
   notify,
 }) {
+  const canSeeCost =
+    hasPermissionFlag(user, config, 'view_costs') ||
+    hasPermissionFlag(user, config, 'view_entry_cost');
   const [tab, setTab] = useState(initialTab);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -194,6 +200,7 @@ export default function CatalogWhatsappPage({
       await api.post('/api/catalog-admin/products/quick', {
         name: newProd.name,
         category: newProd.category,
+        compatibility: newProd.compatibility || '',
         unit: newProd.unit,
         sale_price_cup: Number(newProd.sale_price_cup),
         initial_stock: Number(newProd.initial_stock || 0),
@@ -207,6 +214,7 @@ export default function CatalogWhatsappPage({
       setNewProd({
         name: '',
         category: 'Alimentos Básicos',
+        compatibility: '',
         unit: 'u',
         sale_price_cup: '',
         initial_stock: '20',
@@ -232,6 +240,7 @@ export default function CatalogWhatsappPage({
       const payload = {
         name: editingProd.name,
         category: editingProd.category,
+        compatibility: editingProd.compatibility || '',
         catalog_description: editingProd.catalog_description,
         image_url: editingProd.image_url,
         catalog_visible: editingProd.catalog_visible,
@@ -1000,6 +1009,20 @@ export default function CatalogWhatsappPage({
                 />
               </label>
               <label className="flex items-center justify-between gap-2 rounded-2xl border border-[#E7E1D6] p-3 cursor-pointer">
+                <span className="text-xs font-medium text-[#181715]">Mostrar cantidad exacta de stock</span>
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-[#15614B]"
+                  checked={Boolean(settingsForm.catalog_show_stock_qty)}
+                  onChange={(e) =>
+                    setSettingsForm({
+                      ...settingsForm,
+                      catalog_show_stock_qty: e.target.checked,
+                    })
+                  }
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2 rounded-2xl border border-[#E7E1D6] p-3 cursor-pointer">
                 <span className="text-xs font-medium text-[#181715]">Permitir encargo sin stock</span>
                 <input
                   type="checkbox"
@@ -1135,20 +1158,35 @@ export default function CatalogWhatsappPage({
                 ))}
               </datalist>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-[#6E685F] mb-1">
-                Costo unitario (opcional)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                className="input-field"
-                placeholder="Se calcula solo si lo dejas vacío"
-                value={newProd.unit_cost_cup}
-                onChange={(e) => setNewProd({ ...newProd, unit_cost_cup: e.target.value })}
-              />
-            </div>
+            {canSeeCost && (
+              <div>
+                <label className="block text-xs font-semibold text-[#6E685F] mb-1">
+                  Costo unitario (opcional)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  className="input-field"
+                  placeholder="Se calcula solo si lo dejas vacío"
+                  value={newProd.unit_cost_cup}
+                  onChange={(e) => setNewProd({ ...newProd, unit_cost_cup: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-[#6E685F] mb-1">
+              Compatibilidad / Formato / Especificación (opcional)
+            </label>
+            <input
+              type="text"
+              className="input-field"
+              placeholder="Ej: Botella 1L · Modelo universal · Talla M"
+              value={newProd.compatibility || ''}
+              onChange={(e) => setNewProd({ ...newProd, compatibility: e.target.value })}
+            />
           </div>
 
           <div>
@@ -1158,24 +1196,17 @@ export default function CatalogWhatsappPage({
             <input
               type="text"
               className="input-field"
-              placeholder="Ej: Recién horneada, masa casera"
+              placeholder="Ej: Recién horneada, entrega inmediata"
               value={newProd.catalog_description}
               onChange={(e) => setNewProd({ ...newProd, catalog_description: e.target.value })}
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-[#6E685F] mb-1">
-              Enlace de foto (opcional)
-            </label>
-            <input
-              type="url"
-              className="input-field"
-              placeholder="https://..."
-              value={newProd.image_url}
-              onChange={(e) => setNewProd({ ...newProd, image_url: e.target.value })}
-            />
-          </div>
+          <ImagePickerField
+            value={newProd.image_url || ''}
+            onChange={(img) => setNewProd((p) => ({ ...p, image_url: img }))}
+            label="Foto del producto (subir o tomar con cámara · ≤800×800 WebP/JPEG)"
+          />
 
           <label className="flex items-center gap-2 text-xs font-semibold text-[#181715] cursor-pointer">
             <input
@@ -1247,6 +1278,20 @@ export default function CatalogWhatsappPage({
             </div>
             <div>
               <label className="block text-xs font-semibold text-[#181715] mb-1">
+                Compatibilidad / Especificaciones
+              </label>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="Ej: Formato 1 kg · Compatible con modelo X"
+                value={editingProd.compatibility || ''}
+                onChange={(e) =>
+                  setEditingProd({ ...editingProd, compatibility: e.target.value })
+                }
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-[#181715] mb-1">
                 Descripción para el cliente
               </label>
               <input
@@ -1259,18 +1304,11 @@ export default function CatalogWhatsappPage({
                 }
               />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-[#181715] mb-1">
-                URL de foto (opcional)
-              </label>
-              <input
-                type="url"
-                className="input-field"
-                placeholder="https://..."
-                value={editingProd.image_url || ''}
-                onChange={(e) => setEditingProd({ ...editingProd, image_url: e.target.value })}
-              />
-            </div>
+            <ImagePickerField
+              value={editingProd.image_url || ''}
+              onChange={(img) => setEditingProd((p) => ({ ...p, image_url: img }))}
+              label="Foto del producto (subir o tomar con cámara · ≤800×800 WebP/JPEG)"
+            />
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"

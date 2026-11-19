@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, Download, Printer, Send, Users, Wallet } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { ROLE_META, downloadCsv, formatCup } from '../lib/format.js';
+import { canUserAccess } from '../lib/permissions.js';
 import StatCard from '../components/StatCard.jsx';
 import Modal from '../components/Modal.jsx';
 
-export default function PayrollPage({ onRefreshBadges, notify }) {
+export default function PayrollPage({ user, config, onRefreshBadges, notify }) {
+  const canEdit = !user || canUserAccess(user, config, 'payroll', 'canEdit');
   const [data, setData] = useState(null);
   const [payModal, setPayModal] = useState(false);
   const [payRef, setPayRef] = useState('');
@@ -111,10 +113,16 @@ export default function PayrollPage({ onRefreshBadges, notify }) {
             Imprimir
           </button>
           {!isPaid ? (
-            <button type="button" onClick={() => setPayModal(true)} className="btn-primary text-xs">
-              <Send className="h-3.5 w-3.5" />
-              Aprobar y Pagar Nómina
-            </button>
+            canEdit ? (
+              <button type="button" onClick={() => setPayModal(true)} className="btn-primary text-xs">
+                <Send className="h-3.5 w-3.5" />
+                Aprobar y Pagar Nómina
+              </button>
+            ) : (
+              <span className="rounded-full bg-[#F3EFE7] px-3 py-1.5 text-[11px] font-semibold text-[#6E685F]">
+                Solo lectura
+              </span>
+            )
           ) : (
             <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-100 px-3 py-2 text-xs font-bold text-emerald-800">
               <CheckCircle2 className="h-4 w-4" />

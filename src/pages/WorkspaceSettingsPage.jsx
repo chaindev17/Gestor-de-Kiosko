@@ -21,6 +21,7 @@ import { formatCup, ROLE_META } from '../lib/format.js';
 import {
   AUTOMATION_RULES,
   MODULE_CATALOG,
+  OPERATION_MODES,
   PERMISSION_CONTROLS,
   PRESET_CARDS,
 } from '../lib/modules.js';
@@ -668,9 +669,114 @@ export default function WorkspaceSettingsPage({
         </div>
       )}
 
-      {/* TAB 2: MÓDULOS DEL SOFTWARE */}
+      {/* TAB 2: MÓDULOS Y MODO DE OPERACIÓN */}
       {tab === 'modules' && (
         <div className="space-y-6">
+          {/* Modo de Operación del Negocio + Regla de Catálogo Stock=0 */}
+          <div className="card p-6 space-y-4">
+            <div>
+              <h2 className="text-base font-bold text-[#181715]">
+                Modo de operación del negocio y sincronización con Catálogo
+              </h2>
+              <p className="text-xs text-[#6E685F]">
+                Elige cómo opera tu establecimiento en el día a día y cómo se comportan los productos cuando el stock llega a 0.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {OPERATION_MODES.map((m) => {
+                const active = (gov.operation_mode || 'POS_CATALOGO') === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() =>
+                      setGov((g) => ({
+                        ...g,
+                        operation_mode: m.id,
+                        catalog_enabled: m.id === 'SOLO_POS' ? 0 : 1,
+                        max_sellers_per_shift:
+                          m.id === 'MULTICAJA' ? Math.max(2, Number(g.max_sellers_per_shift || 2)) : g.max_sellers_per_shift,
+                      }))
+                    }
+                    className={`rounded-2xl border p-3.5 text-left transition cursor-pointer ${
+                      active
+                        ? 'border-[#181715] bg-[#181715] text-[#FAF8F4]'
+                        : 'border-[#E7E1D6] bg-white text-[#181715] hover:border-[#C2B8A6]'
+                    }`}
+                  >
+                    <p className="text-xs font-extrabold">{m.label}</p>
+                    <p
+                      className={`mt-1 text-[11px] leading-snug ${
+                        active ? 'text-white/80' : 'text-[#6E685F]'
+                      }`}
+                    >
+                      {m.summary}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#EFECE4] text-xs">
+              <label className="flex items-start gap-2.5 rounded-xl bg-[#FAF8F4] border border-[#E7E1D6] p-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(gov.catalog_show_out_of_stock ?? 1)}
+                  onChange={(e) =>
+                    setGov((g) => ({ ...g, catalog_show_out_of_stock: e.target.checked ? 1 : 0 }))
+                  }
+                  className="mt-0.5 h-4 w-4 accent-[#15614B]"
+                />
+                <div>
+                  <p className="font-bold text-[#181715]">
+                    Stock = 0: mostrar como «Agotado»
+                  </p>
+                  <p className="text-[11px] text-[#6E685F]">
+                    Si lo desactivas, al venderse o darse de baja por merma se oculta solo del catálogo.
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 rounded-xl bg-[#FAF8F4] border border-[#E7E1D6] p-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(gov.catalog_show_stock_qty ?? 0)}
+                  onChange={(e) =>
+                    setGov((g) => ({ ...g, catalog_show_stock_qty: e.target.checked ? 1 : 0 }))
+                  }
+                  className="mt-0.5 h-4 w-4 accent-[#15614B]"
+                />
+                <div>
+                  <p className="font-bold text-[#181715]">
+                    Mostrar cantidad exacta al cliente
+                  </p>
+                  <p className="text-[11px] text-[#6E685F]">
+                    Por defecto el cliente solo ve «Disponible» o «Agotado» sin cifras internas.
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 rounded-xl bg-[#FAF8F4] border border-[#E7E1D6] p-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(gov.strict_ipv_control ?? 1)}
+                  onChange={(e) =>
+                    setGov((g) => ({ ...g, strict_ipv_control: e.target.checked ? 1 : 0 }))
+                  }
+                  className="mt-0.5 h-4 w-4 accent-[#15614B]"
+                />
+                <div>
+                  <p className="font-bold text-[#181715]">
+                    Control estricto de IPV y mermas
+                  </p>
+                  <p className="text-[11px] text-[#6E685F]">
+                    Exige acta SC-2-16 aprobada y validación formal del Jefe en cierres de caja.
+                  </p>
+                </div>
+              </label>
+            </div>
+          </div>
+
           <div className="card p-6 space-y-4">
             <div>
               <h2 className="text-base font-bold text-[#181715]">Plantillas rápidas de manejo</h2>
@@ -1081,6 +1187,78 @@ export default function WorkspaceSettingsPage({
                   setGov((g) => ({ ...g, petty_cash_fund_cup: Number(e.target.value) }))
                 }
               />
+            </div>
+
+            {/* Moneda Principal CUP y Tasas Internas de Referencia (USD / MLC / EUR) */}
+            <div className="sm:col-span-2 mt-2 rounded-2xl border border-[#E5DED0] bg-[#FAF8F4] p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-extrabold text-[#181715]">
+                    Moneda oficial CUP y tasas internas de referencia (USD · MLC · EUR)
+                  </p>
+                  <p className="text-[11px] text-[#6E685F]">
+                    Toda la facturación, tablilla y contabilidad opera en CUP. Las tasas sirven solo como apoyo interno del Jefe y Economía (nunca visibles al cliente).
+                  </p>
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs font-bold text-[#181715] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(gov.show_fx_reference ?? 1)}
+                    onChange={(e) =>
+                      setGov((g) => ({ ...g, show_fx_reference: e.target.checked ? 1 : 0 }))
+                    }
+                    className="h-4 w-4 accent-[#15614B]"
+                  />
+                  Mostrar referencia interna
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#4A463F] mb-1">
+                    1 USD = (CUP)
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    className="input-field bg-white tabular-nums font-semibold"
+                    value={gov.rate_usd_cup ?? 320}
+                    onChange={(e) =>
+                      setGov((g) => ({ ...g, rate_usd_cup: Number(e.target.value) }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#4A463F] mb-1">
+                    1 MLC = (CUP)
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    className="input-field bg-white tabular-nums font-semibold"
+                    value={gov.rate_mlc_cup ?? 275}
+                    onChange={(e) =>
+                      setGov((g) => ({ ...g, rate_mlc_cup: Number(e.target.value) }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#4A463F] mb-1">
+                    1 EUR = (CUP)
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    className="input-field bg-white tabular-nums font-semibold"
+                    value={gov.rate_eur_cup ?? 340}
+                    onChange={(e) =>
+                      setGov((g) => ({ ...g, rate_eur_cup: Number(e.target.value) }))
+                    }
+                  />
+                </div>
+              </div>
             </div>
           </div>
 

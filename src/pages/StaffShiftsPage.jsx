@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Clock, Edit3, Plus, ShieldCheck, UserPlus } from 'lucide-react';
+import { Clock, Edit3, KeyRound, Lock, Plus, RotateCcw, ShieldCheck, UserPlus } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { ROLE_META, formatCup } from '../lib/format.js';
+import {
+  MENU_SCHEMA,
+  PERMISSION_FLAGS_SCHEMA,
+  buildUserPermissions,
+  getRoleDefaultMatrix,
+} from '../lib/permissions.js';
 import Modal from '../components/Modal.jsx';
 
 const EMPTY_FORM = {
@@ -26,9 +32,99 @@ export default function StaffShiftsPage({ user, notify, onRefreshBadges }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [shiftModal, setShiftModal] = useState(false);
   const [shiftForm, setShiftForm] = useState({ name: '', code: '', start_time: '07:00', end_time: '15:00' });
+  const [permModal, setPermModal] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const canEdit = user.role === 'jefe';
+  const canEdit =
+    user.role === 'jefe' || Boolean(user.permissions_matrix?.items?.staff?.canEdit);
+  const isJefe = user.role === 'jefe';
+
+  function openPermissionsEditor(worker) {
+    const resolved = worker.permissions_matrix?.items
+      ? worker.permissions_matrix
+      : buildUserPermissions(worker, data?.config || {});
+    const itemsClone = {};
+    for (const m of MENU_SCHEMA) {
+      const p = resolved.items?.[m.id] || { canView: false, canEdit: false, canApprove: false };
+      itemsClone[m.id] = {
+        canView: Boolean(p.canView),
+        canEdit: Boolean(p.canEdit),
+        canApprove: Boolean(m.supportsApprove && p.canApprove),
+      };
+    }
+    const flagsClone = {};
+    for (const f of PERMISSION_FLAGS_SCHEMA) {
+      flagsClone[f.key] = Boolean(resolved.flags?.[f.key]);
+    }
+    setPermModal({
+      worker,
+      items: itemsClone,
+      flags: flagsClone,
+      hasCustom: Boolean(worker.has_custom_permissions || resolved.hasCustomOverrides),
+    });
+  }
+
+  function applyRoleTemplate(templateRole) {
+    if (!permModal) return;
+    if (templateRole === 'supervisor') {
+      const base = getRoleDefaultMatrix('almacenero', data?.config || {});
+      base.items['jefe-home'] = { canView: true, canEdit: false, canApprove: false };
+      base.items.pos = { canView: true, canEdit: true, canApprove: false };
+      base.items['shift-ipv'] = { canView: true, canEdit: true, canApprove: true };
+      base.items['catalog-wa'] = { canView: true, canEdit: true, canApprove: false };
+      base.flags.cash_movements = true;
+      setPermModal((pm) => ({ ...pm, items: base.items, flags: base.flags }));
+      return;
+    }
+    const base = getRoleDefaultMatrix(templateRole, data?.config || {});
+    setPermModal((pm) => ({ ...pm, items: base.items, flags: base.flags }));
+  }
+
+  function toggleModulePerm(modId, field, supportsApprove) {
+    setPermModal((pm) => {
+      const cur = pm.items[modId] || { canView: false, canEdit: false, canApprove: false };
+      const next = { ...cur, [field]: !cur[field] };
+      if (field === 'canView' && !next.canView) {
+        next.canEdit = false;
+        next.canApprove = false;
+      }
+      if (field === 'canEdit' && next.canEdit) {
+        next.canView = true;
+      }
+      if (field === 'canApprove') {
+        if (!supportsApprove) next.canApprove = false;
+        else if (next.canApprove) next.canView = true;
+      }
+      return {
+        ...pm,
+        items: { ...pm.items, [modId]: next },
+      };
+    });
+  }
+
+  async function saveWorkerPermissions(reset = false) {
+    if (!permModal) return;
+    setSaving(true);
+    try {
+      await api.put(`/api/config/staff/${permModal.worker.id}/permissions`, {
+        reset,
+        items: permModal.items,
+        flags: permModal.flags,
+      });
+      notify(
+        reset
+          ? `Permisos de ${permModal.worker.full_name} restaurados a los valores estándar de su rol.`
+          : `Permisos de ${permModal.worker.full_name} guardados y registrados en la bitácora.`
+      );
+      setPermModal(null);
+      await load();
+      onRefreshBadges?.();
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -207,9 +303,42 @@ export default function StaffShiftsPage({ user, notify, onRefreshBadges }) {
                   )}
                 </div>
                 {holder && (
-                  <div className="pt-2.5 border-t border-[#EFECE4] flex items-center justify-between text-xs tabular-nums">
-                    <span className="text-[#66707D]">Salario básico</span>
-                    <span className="font-bold text-[#171C22]">{formatCup(holder.base_salary_cup)}</span>
+                  <div className="pt-2.5 border-t border-[#EFECE4] space-y-2 text-xs tabular-nums">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#66707D]">Salario básico</span>
+                      <span className="font-bold text-[#171C22]">{formatCup(holder.base_salary_cup)}</span>
+                    </div>
+                    {holder.role === 'jefe' ? (
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800">
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                        Menú completo (13/13) · Configura y aprueba todo
+                      </div>
+                    ) : (
+                      isJefe && (
+                        <button
+                          type="button"
+                          onClick={() => openPermissionsEditor(holder)}
+                          className="w-full inline-flex items-center justify-between rounded-lg bg-[#F7F5F0] hover:bg-[#ECE8DE] border border-[#E2DDD1] px-2.5 py-1.5 text-[11px] font-bold text-[#181715] cursor-pointer"
+                        >
+                          <span className="inline-flex items-center gap-1.5">
+                            <KeyRound className="h-3 w-3 text-[#0F5C4D]" />
+                            Permisos y menú
+                            {holder.has_custom_permissions && (
+                              <span className="rounded bg-amber-200 px-1 py-0.2 text-[9px] text-amber-950">
+                                Personalizado
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-[#66707D]">
+                            {
+                              MENU_SCHEMA.filter((m) => holder.permissions_matrix?.items?.[m.id]?.canView)
+                                .length
+                            }
+                            /13
+                          </span>
+                        </button>
+                      )
+                    )}
                   </div>
                 )}
               </div>
@@ -283,6 +412,31 @@ export default function StaffShiftsPage({ user, notify, onRefreshBadges }) {
                             <p className="text-[#0F5C4D] font-medium tabular-nums">
                               Vendido mes: {formatCup(seller.month_sales_cup)} ({seller.month_shifts} turno(s))
                             </p>
+                            {isJefe && (
+                              <button
+                                type="button"
+                                onClick={() => openPermissionsEditor(seller)}
+                                className="mt-1.5 w-full inline-flex items-center justify-between rounded-lg bg-white hover:bg-[#EFECE4] border border-[#DFDBD0] px-2.5 py-1.5 text-[11px] font-bold text-[#181715] cursor-pointer"
+                              >
+                                <span className="inline-flex items-center gap-1">
+                                  <KeyRound className="h-3 w-3 text-[#5B3A70]" />
+                                  Permisos
+                                  {seller.has_custom_permissions && (
+                                    <span className="rounded bg-amber-200 px-1 text-[9px] text-amber-950">
+                                      Pers.
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="text-[#66707D]">
+                                  {
+                                    MENU_SCHEMA.filter(
+                                      (m) => seller.permissions_matrix?.items?.[m.id]?.canView
+                                    ).length
+                                  }
+                                  /13 módulos
+                                </span>
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <div className="mt-2">
@@ -335,6 +489,271 @@ export default function StaffShiftsPage({ user, notify, onRefreshBadges }) {
           </div>
         </section>
       )}
+
+      {/* Resumen de Permisos y Accesos por Trabajador (exclusivo del Jefe) */}
+      {isJefe && (
+        <section className="card p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-[#171C22] flex items-center gap-2">
+                <Lock className="h-4 w-4 text-[#0F5C4D]" />
+                Matriz de Permisos Granulares por Trabajador (Ver · Editar · Aprobar)
+              </h2>
+              <p className="text-xs text-[#66707D]">
+                Cada trabajador ve en su menú y puede abrir por URL únicamente las funciones que tú le habilites aquí.
+              </p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-[#FAF8F4] text-[10.5px] uppercase text-[#66707D] border-y border-[#E6E1D6]">
+                <tr>
+                  <th className="px-3 py-2.5 text-left">Trabajador</th>
+                  <th className="px-3 py-2.5 text-left">Cargo / Turno</th>
+                  <th className="px-3 py-2.5 text-left">Módulos habilitados</th>
+                  <th className="px-3 py-2.5 text-center">Costos privados</th>
+                  <th className="px-3 py-2.5 text-center">Editar precios</th>
+                  <th className="px-3 py-2.5 text-right">Control</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#EFECE4]">
+                {activeStaff.map((w) => {
+                  const mx = w.permissions_matrix || buildUserPermissions(w, data.config);
+                  const visibleMods = MENU_SCHEMA.filter((m) => mx.items?.[m.id]?.canView);
+                  const seeCosts = w.role === 'jefe' || Boolean(mx.flags?.view_costs);
+                  const editPrices = w.role === 'jefe' || Boolean(mx.flags?.edit_prices);
+                  return (
+                    <tr key={w.id} className="hover:bg-[#FAF9F5]">
+                      <td className="px-3 py-2.5">
+                        <p className="font-bold text-[#171C22]">{w.full_name}</p>
+                        <p className="text-[10.5px] font-mono text-[#66707D]">@{w.username}</p>
+                      </td>
+                      <td className="px-3 py-2.5 text-[#4C5561]">
+                        {ROLE_META[w.role]?.short || w.role}
+                        {w.shift_name ? ` · ${w.shift_name}` : ''}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {w.role === 'jefe' ? (
+                          <span className="rounded-full bg-emerald-100 text-emerald-900 px-2.5 py-0.5 text-[10.5px] font-bold">
+                            Todos los 13 módulos + Aprobación total
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {visibleMods.map((m) => (
+                              <span
+                                key={m.id}
+                                className="rounded bg-[#EFECE4] px-1.5 py-0.5 text-[10px] font-semibold text-[#3C3832]"
+                              >
+                                {m.shortLabel}
+                                {mx.items[m.id]?.canApprove
+                                  ? ' ★'
+                                  : !mx.items[m.id]?.canEdit
+                                    ? ' (ver)'
+                                    : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            seeCosts
+                              ? 'bg-amber-100 text-amber-900'
+                              : mx.flags?.view_entry_cost
+                                ? 'bg-blue-50 text-blue-800'
+                                : 'bg-stone-100 text-stone-600'
+                          }`}
+                        >
+                          {seeCosts ? 'Global' : mx.flags?.view_entry_cost ? 'Solo entrada' : 'Ocultos'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            editPrices
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'bg-stone-100 text-stone-600'
+                          }`}
+                        >
+                          {editPrices ? 'Directo' : 'Con aprobación'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        {w.role === 'jefe' ? (
+                          <span className="text-[11px] font-semibold text-emerald-800">Fijo (Jefe)</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openPermissionsEditor(w)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-[#181715] text-white px-2.5 py-1 text-[11px] font-bold hover:bg-stone-800 cursor-pointer"
+                          >
+                            <KeyRound className="h-3 w-3" /> Configurar
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* Modal de Permisos Granulares por Trabajador */}
+      <Modal
+        open={Boolean(permModal)}
+        onClose={() => setPermModal(null)}
+        title={permModal ? `Permisos de ${permModal.worker.full_name}` : ''}
+        subtitle="Define qué ve en su menú, qué puede registrar/editar y qué puede aprobar. Bloquea también el acceso por URL directa."
+        maxWidth="max-w-3xl"
+      >
+        {permModal && (
+          <div className="space-y-4 text-xs">
+            {/* Plantillas rápidas */}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 border border-slate-200 px-3 py-2">
+              <span className="text-[11px] font-semibold text-slate-600">Aplicar plantilla rápida:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: 'vendedor', label: 'Dependiente POS' },
+                  { id: 'almacenero', label: 'Almacenero' },
+                  { id: 'supervisor', label: 'Encargado turno' },
+                  { id: 'economico', label: 'Económico' },
+                ].map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => applyRoleTemplate(tpl.id)}
+                    className="rounded-lg bg-white border border-slate-300 hover:border-slate-900 px-2.5 py-1 text-[11px] font-semibold text-slate-800 cursor-pointer"
+                  >
+                    {tpl.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Tabla canView / canEdit / canApprove de los 13 módulos */}
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-[10.5px] uppercase text-slate-500 border-b border-slate-200">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Módulo del menú</th>
+                    <th className="px-2 py-2 text-center w-20">Ver</th>
+                    <th className="px-2 py-2 text-center w-24">Editar / Operar</th>
+                    <th className="px-2 py-2 text-center w-20">Aprobar</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {MENU_SCHEMA.map((m) => {
+                    const row = permModal.items[m.id] || {
+                      canView: false,
+                      canEdit: false,
+                      canApprove: false,
+                    };
+                    return (
+                      <tr key={m.id} className={row.canView ? 'bg-white' : 'bg-slate-50/50 text-slate-400'}>
+                        <td className="px-3 py-2">
+                          <span className="font-semibold text-slate-800">{m.label}</span>
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={row.canView}
+                            onChange={() => toggleModulePerm(m.id, 'canView', m.supportsApprove)}
+                            className="h-4 w-4 accent-slate-900 cursor-pointer"
+                          />
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={row.canEdit}
+                            onChange={() => toggleModulePerm(m.id, 'canEdit', m.supportsApprove)}
+                            className="h-4 w-4 accent-emerald-700 cursor-pointer"
+                          />
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          {m.supportsApprove ? (
+                            <input
+                              type="checkbox"
+                              checked={row.canApprove}
+                              onChange={() => toggleModulePerm(m.id, 'canApprove', m.supportsApprove)}
+                              className="h-4 w-4 accent-amber-600 cursor-pointer"
+                            />
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Permisos de privacidad y acciones sensibles */}
+            <div className="space-y-2">
+              <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                Privacidad de costos, fotos, catálogo y operaciones sensibles
+              </p>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {PERMISSION_FLAGS_SCHEMA.map((f) => (
+                  <label
+                    key={f.key}
+                    className="flex items-start gap-2.5 rounded-xl border border-slate-200 p-2.5 hover:bg-slate-50 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(permModal.flags[f.key])}
+                      onChange={(e) =>
+                        setPermModal((pm) => ({
+                          ...pm,
+                          flags: { ...pm.flags, [f.key]: e.target.checked },
+                        }))
+                      }
+                      className="mt-0.5 h-4 w-4 accent-slate-900"
+                    />
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-800 leading-tight">{f.label}</p>
+                      <p className="text-[10.5px] text-slate-500 mt-0.5 leading-snug">{f.hint}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => saveWorkerPermissions(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Restaurar por rol
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPermModal(null)}
+                  className="rounded-lg border border-slate-200 px-4 py-2 font-semibold text-slate-600 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => saveWorkerPermissions(false)}
+                  className="rounded-lg bg-slate-900 px-5 py-2 font-bold text-white hover:bg-slate-800 disabled:opacity-40 cursor-pointer"
+                >
+                  {saving ? 'Guardando...' : 'Guardar permisos del trabajador'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Worker Modal */}
       <Modal

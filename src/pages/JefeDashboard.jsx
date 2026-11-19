@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { formatCup, formatDate, formatDateTime, formatNumber } from '../lib/format.js';
+import { canUserAccess } from '../lib/permissions.js';
 import {
   buildCatalogUrl,
   buildWhatsappUrl,
@@ -29,6 +30,7 @@ import {
 import StatCard from '../components/StatCard.jsx';
 
 export default function JefeDashboard({
+  user,
   onNavigate,
   onOpenCatalogTab,
   onPreviewCatalog,
@@ -122,6 +124,7 @@ export default function JefeDashboard({
 
   const mods = data.config.modules || {};
   const isOn = (k) => mods[k] !== false;
+  const canGo = (modId) => !user || canUserAccess(user, data.config, modId, 'canView');
   const inc = onat.income_statement;
   const maxCajas = Number(data.config.max_sellers_per_shift || 2);
   const pendingAffs = Number(pending_approvals.affiliations_count || 0);
@@ -177,14 +180,16 @@ export default function JefeDashboard({
             <RefreshCw className="h-3.5 w-3.5" />
             Actualizar
           </button>
-          <button
-            type="button"
-            onClick={() => onNavigate('workspace-settings')}
-            className="btn-secondary rounded-full text-xs py-2 px-3.5"
-          >
-            <Sliders className="h-3.5 w-3.5" />
-            Personalizar
-          </button>
+          {canGo('workspace-settings') && (
+            <button
+              type="button"
+              onClick={() => onNavigate('workspace-settings')}
+              className="btn-secondary rounded-full text-xs py-2 px-3.5"
+            >
+              <Sliders className="h-3.5 w-3.5" />
+              Mi Empresa y Modo
+            </button>
+          )}
         </div>
       </div>
 
@@ -218,24 +223,26 @@ export default function JefeDashboard({
       {/* SUPER-INTUITIVE 4-CARD QUICK LAUNCHPAD ("¿Qué quieres hacer?")    */}
       {/* ================================================================= */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <button
-          type="button"
-          onClick={() => onNavigate('pos')}
-          className="group rounded-2xl bg-[#181715] text-[#FAF8F4] p-4 text-left flex flex-col justify-between gap-3 hover:bg-[#2B2925] transition cursor-pointer shadow-xs"
-        >
-          <div className="flex items-center justify-between">
-            <span className="h-10 w-10 rounded-xl bg-white/12 flex items-center justify-center">
-              <ShoppingCart className="h-5 w-5 text-white" />
-            </span>
-            <ArrowRight className="h-4 w-4 text-white/60 group-hover:translate-x-0.5 transition" />
-          </div>
-          <div>
-            <p className="text-sm font-bold">Cobrar venta</p>
-            <p className="text-[11px] text-[#C8C2B7]">Efectivo, QR o mixto</p>
-          </div>
-        </button>
+        {canGo('pos') && (
+          <button
+            type="button"
+            onClick={() => onNavigate('pos')}
+            className="group rounded-2xl bg-[#181715] text-[#FAF8F4] p-4 text-left flex flex-col justify-between gap-3 hover:bg-[#2B2925] transition cursor-pointer shadow-xs"
+          >
+            <div className="flex items-center justify-between">
+              <span className="h-10 w-10 rounded-xl bg-white/12 flex items-center justify-center">
+                <ShoppingCart className="h-5 w-5 text-white" />
+              </span>
+              <ArrowRight className="h-4 w-4 text-white/60 group-hover:translate-x-0.5 transition" />
+            </div>
+            <div>
+              <p className="text-sm font-bold">Mostrador (POS)</p>
+              <p className="text-[11px] text-[#C8C2B7]">Efectivo CUP, Transfermóvil o EnZona</p>
+            </div>
+          </button>
+        )}
 
-        {isOn('catalog') && (
+        {isOn('catalog') && canGo('catalog-wa') && (
           <button
             type="button"
             onClick={() => onNavigate('catalog-wa')}
@@ -264,7 +271,7 @@ export default function JefeDashboard({
           </button>
         )}
 
-        {isOn('warehouse') && (
+        {isOn('warehouse') && canGo('warehouse') && (
           <button
             type="button"
             onClick={() => onNavigate('warehouse')}
@@ -283,31 +290,104 @@ export default function JefeDashboard({
               )}
             </div>
             <div>
-              <p className="text-sm font-bold text-[#181715]">Productos y stock</p>
+              <p className="text-sm font-bold text-[#181715]">Almacén y Stock</p>
               <p className="text-[11px] text-[#6E685F]">
-                {inventory.total_products} artículos cargados
+                Entradas, fotos y {inventory.total_products} productos
               </p>
             </div>
           </button>
         )}
 
+        {canGo('staff') && (
+          <button
+            type="button"
+            onClick={() => onNavigate('staff')}
+            className="group rounded-2xl bg-white border border-[#E7E1D6] p-4 text-left flex flex-col justify-between gap-3 hover:border-[#C2B8A6] transition cursor-pointer"
+          >
+            <div className="flex items-center justify-between">
+              <span className="h-10 w-10 rounded-xl bg-[#F3EFE7] text-[#181715] flex items-center justify-center">
+                <UserPlus className="h-5 w-5" />
+              </span>
+              <ArrowRight className="h-4 w-4 text-[#8A8379] group-hover:translate-x-0.5 transition" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-[#181715]">Equipo y Turnos</p>
+              <p className="text-[11px] text-[#6E685F] truncate">
+                Permisos y código {companyCode || ''}
+              </p>
+            </div>
+          </button>
+        )}
+      </section>
+
+      {/* ================================================================= */}
+      {/* RESUMEN EJECUTIVO HOY: EFECTIVO CUP · TRANSFERMÓVIL · ENZONA · CAJAS */}
+      {/* ================================================================= */}
+      <section className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="rounded-2xl bg-[#181715] text-[#FAF8F4] p-4 space-y-1">
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-white/65">
+            Ventas hoy (CUP)
+          </p>
+          <p className="text-lg sm:text-xl font-black tabular-nums">
+            {formatCup(today_sales.total_cup)}
+          </p>
+          <p className="text-[11px] text-white/75">
+            {today_sales.tickets} comprobante{today_sales.tickets === 1 ? '' : 's'} ·{' '}
+            {today_sales.electronic_pct}% digital
+          </p>
+        </div>
+
+        <div className="rounded-2xl bg-white border border-[#E7E1D6] p-4 space-y-1">
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-[#756E64]">
+            Efectivo CUP
+          </p>
+          <p className="text-base sm:text-lg font-extrabold text-[#181715] tabular-nums">
+            {formatCup(today_sales.cash_cup ?? 0)}
+          </p>
+          <p className="text-[11px] text-[#6E685F]">Cobrado en billetes</p>
+        </div>
+
+        <div className="rounded-2xl bg-white border border-[#E7E1D6] p-4 space-y-1">
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-[#15614B]">
+            Transfermóvil QR
+          </p>
+          <p className="text-base sm:text-lg font-extrabold text-[#15614B] tabular-nums">
+            {formatCup(today_sales.transfermovil_cup ?? 0)}
+          </p>
+          <p className="text-[11px] text-[#6E685F]">Pasarela ETECSA / BCC</p>
+        </div>
+
+        <div className="rounded-2xl bg-white border border-[#E7E1D6] p-4 space-y-1">
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-[#1E3A5F]">
+            EnZona QR
+          </p>
+          <p className="text-base sm:text-lg font-extrabold text-[#1E3A5F] tabular-nums">
+            {formatCup(today_sales.enzona_cup ?? 0)}
+          </p>
+          <p className="text-[11px] text-[#6E685F]">Cobro electrónico XETID</p>
+        </div>
+
         <button
           type="button"
-          onClick={() => onNavigate('workspace-settings')}
-          className="group rounded-2xl bg-white border border-[#E7E1D6] p-4 text-left flex flex-col justify-between gap-3 hover:border-[#C2B8A6] transition cursor-pointer"
+          onClick={() => onNavigate('shift-ipv')}
+          className="col-span-2 lg:col-span-1 rounded-2xl bg-white border border-[#E7E1D6] hover:border-[#181715] p-4 space-y-1 text-left transition cursor-pointer"
         >
-          <div className="flex items-center justify-between">
-            <span className="h-10 w-10 rounded-xl bg-[#F3EFE7] text-[#181715] flex items-center justify-center">
-              <UserPlus className="h-5 w-5" />
-            </span>
-            <ArrowRight className="h-4 w-4 text-[#8A8379] group-hover:translate-x-0.5 transition" />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-[#181715]">Equipo y código</p>
-            <p className="text-[11px] text-[#6E685F] font-mono truncate">
-              {companyCode || 'Invitar empleados'}
-            </p>
-          </div>
+          <p className="text-[10.5px] font-bold uppercase tracking-wider text-[#756E64]">
+            Cajas e IPV
+          </p>
+          <p className="text-base sm:text-lg font-extrabold text-[#181715] tabular-nums">
+            {active_shift?.registers?.filter((r) => r.status === 'ABIERTA').length || 0} abiertas ·{' '}
+            {(active_shift?.registers?.filter((r) => r.status !== 'ABIERTA').length || 0) +
+              Number(data.closed_shifts_today || 0)}{' '}
+            cerradas
+          </p>
+          <p className="text-[11px] text-[#6E685F]">
+            {pending_approvals.mermas.length > 0
+              ? `${pending_approvals.mermas.length} merma(s) por aprobar`
+              : (pending_approvals.price_requests || []).length > 0
+                ? `${pending_approvals.price_requests.length} precio(s) por aprobar`
+                : `${inventory.low_kiosk_count || 0} alerta(s) de stock`}
+          </p>
         </button>
       </section>
 
@@ -748,19 +828,26 @@ export default function JefeDashboard({
             </div>
           </section>
 
-          {/* Recent Automation Feed */}
+          {/* Bitácora de Auditoría y Actividad Reciente */}
           <section className="card p-5 lg:col-span-3 space-y-3">
             <h3 className="text-sm font-bold text-[#181715] flex items-center gap-1.5">
               <Zap className="h-4 w-4 text-[#C2542D]" />
-              Actividad reciente
+              Bitácora de acciones
             </h3>
             <div className="space-y-2.5 max-h-56 overflow-y-auto text-xs">
-              {(automation_feed || []).slice(0, 6).map((ev) => (
-                <div key={ev.id} className="border-b border-[#F3EFE7] pb-2 last:border-0">
-                  <p className="font-semibold text-[#181715] leading-snug">{ev.title}</p>
-                  <p className="text-[10px] text-[#8A8379] mt-0.5">{formatDateTime(ev.created_at)}</p>
-                </div>
-              ))}
+              {(data.recent_audit?.length ? data.recent_audit : automation_feed || [])
+                .slice(0, 7)
+                .map((ev) => (
+                  <div key={ev.id} className="border-b border-[#F3EFE7] pb-2 last:border-0">
+                    <p className="font-semibold text-[#181715] leading-snug">
+                      {ev.detail || ev.title}
+                    </p>
+                    <p className="text-[10px] text-[#8A8379] mt-0.5">
+                      {ev.user_name ? `${ev.user_name} (${ev.user_role}) · ` : ''}
+                      {formatDateTime(ev.created_at)}
+                    </p>
+                  </div>
+                ))}
             </div>
           </section>
         </div>

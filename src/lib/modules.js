@@ -214,9 +214,14 @@ export const PERMISSION_CONTROLS = [
         hint: 'Permite avisar con un toque cuando queda poca mercancía en el mostrador.',
       },
       {
+        key: 'vendedor_view_stock',
+        label: 'Pueden consultar Almacén y Stock (sin costos ni proveedores)',
+        hint: 'Vista limpia solo de existencias, fotos y precios públicos; oculta costos privados.',
+      },
+      {
         key: 'vendedor_view_pricelist',
-        label: 'Ven la Lista Oficial de precios',
-        hint: 'Muestra la tablilla actualizada de precios para consultar o imprimir.',
+        label: 'Ven la Tablilla Oficial de precios (sin márgenes)',
+        hint: 'Muestra la tablilla actualizada en CUP para consultar o mostrar al cliente.',
       },
     ],
   },
@@ -226,13 +231,18 @@ export const PERMISSION_CONTROLS = [
     items: [
       {
         key: 'almacenero_create_products',
-        label: 'Puede dar de alta productos nuevos',
-        hint: 'Si lo apagas, solo el creador o el económico crean artículos en el catálogo.',
+        label: 'Puede dar de alta productos nuevos + foto en la entrada',
+        hint: 'Permite crear ficha, subir foto comprimida y dar entrada en un solo paso.',
+      },
+      {
+        key: 'almacenero_edit_prices',
+        label: 'Puede modificar precios finales sin esperar aprobación',
+        hint: 'Por defecto apagado: sus cambios de precio quedan pendientes de aprobación del Jefe.',
       },
       {
         key: 'almacenero_view_pricelist',
-        label: 'Puede consultar precios y catálogo',
-        hint: 'Le permite revisar precios vigentes y fotos/descripciones del catálogo.',
+        label: 'Puede consultar precios y publicar en Catálogo',
+        hint: 'Le permite revisar precios vigentes y actualizar fotos/descripciones del catálogo.',
       },
       {
         key: 'almacenero_view_compliance',
@@ -296,6 +306,11 @@ export const AUTOMATION_RULES = [
     hint: 'Programa el depósito bancario del efectivo recaudado para el siguiente día hábil.',
   },
   {
+    key: 'strict_ipv_control',
+    label: 'Control estricto de IPV, mermas y arqueos',
+    hint: 'Exige acta SC-2-16 aprobada en mermas y validación formal del Jefe en cierres con diferencia.',
+  },
+  {
     key: 'strict_price_cap_block',
     label: 'Bloquear precios por encima del tope oficial (MFP)',
     hint: 'Impide guardar o cobrar precios superiores al tope o al margen máximo configurado.',
@@ -304,5 +319,28 @@ export const AUTOMATION_RULES = [
     key: 'strict_bancarizacion_block',
     label: 'Bloquear pagos en efectivo mayores al límite bancarizado',
     hint: 'Exige transferencia o pago digital cuando una compra supera el tope en efectivo.',
+  },
+];
+
+export const OPERATION_MODES = [
+  {
+    id: 'SOLO_POS',
+    label: 'Solo POS (Mostrador)',
+    summary: 'Venta presencial en caja con IPV, almacén y contabilidad; catálogo público apagado.',
+  },
+  {
+    id: 'POS_CATALOGO',
+    label: 'POS + Catálogo WhatsApp',
+    summary: 'Mostrador presencial y catálogo digital sincronizados en stock, fotos y precios CUP.',
+  },
+  {
+    id: 'SOLO_CATALOGO',
+    label: 'Solo Catálogo y Pedidos',
+    summary: 'Ventas por enlace/QR y pedidos directos a WhatsApp con descuento automático de stock.',
+  },
+  {
+    id: 'MULTICAJA',
+    label: 'Multicaja / Multiturno',
+    summary: 'Varias cajas simultáneas por turno (hasta 6), IPV estricto, arqueos individuales y catálogo.',
   },
 ];

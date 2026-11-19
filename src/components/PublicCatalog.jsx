@@ -169,7 +169,9 @@ export default function PublicCatalog({
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
         p.category.toLowerCase().includes(q) ||
+        (p.compatibility || '').toLowerCase().includes(q) ||
         (p.catalog_description || '').toLowerCase().includes(q)
       );
     });
@@ -839,23 +841,37 @@ export default function PublicCatalog({
                             ⭐ Destacado
                           </span>
                         )}
-                        {lowStock && (
-                          <span className="inline-flex items-center rounded-full bg-[#FCECE6] text-[#B5421E] px-2 py-0.5 text-[10px] font-semibold">
-                            ¡Quedan {formatNumber(p.available_stock)}!
-                          </span>
-                        )}
-                        {outOfStock && (
-                          <span className="inline-flex items-center rounded-full bg-[#EFECE6] text-[#6E685F] px-2 py-0.5 text-[10px] font-semibold">
+                        {outOfStock ? (
+                          <span className="inline-flex items-center rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-[10px] font-bold">
                             Agotado
+                          </span>
+                        ) : store.catalog_show_stock_qty ? (
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              lowStock
+                                ? 'bg-[#FCECE6] text-[#B5421E]'
+                                : 'bg-[#E6F5EF] text-[#15614B]'
+                            }`}
+                          >
+                            Disponible · {formatNumber(p.available_stock)} {p.unit}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full bg-[#E6F5EF] text-[#15614B] px-2 py-0.5 text-[10px] font-semibold">
+                            {p.stock_label || 'Disponible'}
                           </span>
                         )}
                       </div>
                       <h2 className="text-[15px] font-bold text-[#181715] leading-snug">{p.name}</h2>
+                      {p.compatibility && (
+                        <p className="mt-0.5 text-[11px] font-medium text-[#4A463F] truncate">
+                          {p.compatibility}
+                        </p>
+                      )}
                       {p.catalog_description ? (
                         <p className="mt-0.5 text-xs text-[#6E685F] line-clamp-2">{p.catalog_description}</p>
-                      ) : (
+                      ) : !p.compatibility ? (
                         <p className="mt-0.5 text-[11px] text-[#8A8379]">{p.category}</p>
-                      )}
+                      ) : null}
                     </div>
                   </div>
 
@@ -869,8 +885,8 @@ export default function PublicCatalog({
                     </div>
 
                     {!store.catalog_enabled || outOfStock ? (
-                      <span className="rounded-full bg-[#F3EFE7] px-3.5 py-2 text-xs font-medium text-[#8A8379]">
-                        {outOfStock ? 'Sin stock' : 'Pausado'}
+                      <span className="rounded-full bg-[#F3EFE7] px-3.5 py-2 text-xs font-bold text-[#7A746B]">
+                        {outOfStock ? 'Agotado' : 'Pausado'}
                       </span>
                     ) : qty === 0 ? (
                       <button

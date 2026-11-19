@@ -11,6 +11,7 @@ import {
 } from '../cubanLawEngine.js';
 import { resetAllData } from '../seed.js';
 import { getPendingAffiliationsCount } from '../platform.js';
+import { buildUserPermissions, MENU_SCHEMA, PERMISSION_FLAGS_SCHEMA } from '../../src/lib/permissions.js';
 
 const router = Router();
 
@@ -105,6 +106,26 @@ router.put('/', requireAuth, requireRole('jefe', 'economico'), (req, res) => {
           ? 1
           : 0
         : current.strict_bancarizacion_block,
+    strict_ipv_control:
+      body.strict_ipv_control !== undefined
+        ? body.strict_ipv_control
+          ? 1
+          : 0
+        : current.strict_ipv_control ?? 1,
+    operation_mode: ['SOLO_POS', 'POS_CATALOGO', 'SOLO_CATALOGO', 'MULTICAJA'].includes(
+      body.operation_mode
+    )
+      ? body.operation_mode
+      : current.operation_mode || 'POS_CATALOGO',
+    rate_usd_cup: Math.max(1, roundCup(body.rate_usd_cup ?? current.rate_usd_cup ?? 320)),
+    rate_mlc_cup: Math.max(1, roundCup(body.rate_mlc_cup ?? current.rate_mlc_cup ?? 275)),
+    rate_eur_cup: Math.max(1, roundCup(body.rate_eur_cup ?? current.rate_eur_cup ?? 340)),
+    show_fx_reference:
+      body.show_fx_reference !== undefined
+        ? body.show_fx_reference
+          ? 1
+          : 0
+        : current.show_fx_reference ?? 1,
   };
 
   db.prepare(
@@ -146,6 +167,12 @@ router.put('/', requireAuth, requireRole('jefe', 'economico'), (req, res) => {
        auto_deposit_order_enabled = @auto_deposit_order_enabled,
        strict_price_cap_block = @strict_price_cap_block,
        strict_bancarizacion_block = @strict_bancarizacion_block,
+       strict_ipv_control = @strict_ipv_control,
+       operation_mode = @operation_mode,
+       rate_usd_cup = @rate_usd_cup,
+       rate_mlc_cup = @rate_mlc_cup,
+       rate_eur_cup = @rate_eur_cup,
+       show_fx_reference = @show_fx_reference,
        updated_at = datetime('now')
      WHERE id = 1`
   ).run(updated);
@@ -176,17 +203,24 @@ router.put('/', requireAuth, requireRole('jefe', 'economico'), (req, res) => {
   res.json({ config: getConfig(db), compliance });
 });
 
-router.get('/staff', requireAuth, requireRole('jefe', 'economico'), (_req, res) => {
+router.get('/staff', requireAuth, (req, res) => {
+  if (
+    req.user.role !== 'jefe' &&
+    req.user.role !== 'economico' &&
+    !req.user.permissions_matrix?.items?.staff?.canView
+  ) {
+    return res.status(403).json({ error: 'Acceso restringido al módulo Equipo y Turnos.' });
+  }
   const db = getDb();
   const period = getCurrentPeriod();
   const config = getConfig(db);
   const shifts = db.prepare('SELECT * FROM shift_templates ORDER BY id').all();
-  const users = db
+  const rawUsers = db
     .prepare(
       `SELECT u.id, u.username, u.email, u.full_name, u.ci, u.nit_personal, u.role,
               u.shift_template_id, st.name AS shift_name, st.start_time, st.end_time,
               u.default_register, u.contract_type, u.contract_date,
-              u.base_salary_cup, u.sales_commission_pct, u.phone, u.active, u.created_at,
+              u.base_salary_cup, u.sales_commission_pct, u.phone, u.permissions_json, u.active, u.created_at,
               (SELECT COALESCE(SUM(s.total_cup), 0) FROM sales s
                WHERE s.seller_id = u.id AND s.status = 'COMPLETADA' AND substr(s.sale_date, 1, 7) = ?) AS month_sales_cup,
               (SELECT COUNT(*) FROM shift_registers sr
@@ -203,7 +237,74 @@ router.get('/staff', requireAuth, requireRole('jefe', 'economico'), (_req, res) 
     )
     .all(period, period);
 
+  const users = rawUsers.map((u) => {
+    const matrix = buildUserPermissions(u, config);
+    return {
+      ...u,
+      permissions_matrix: matrix,
+      has_custom_permissions: matrix.hasCustomOverrides,
+    };
+  });
+
   res.json({ staff: users, shifts, config });
+});
+
+router.put('/staff/:id/permissions', requireAuth, requireRole('jefe'), (req, res) => {
+  const db = getDb();
+  const config = getConfig(db);
+  const id = Number(req.params.id);
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!target) return res.status(404).json({ error: 'Trabajador no encontrado.' });
+  if (target.role === 'jefe') {
+    return res
+      .status(400)
+      .json({ error: 'El Jefe del Negocio conserva siempre el acceso total a todos los módulos.' });
+  }
+
+  const body = req.body || {};
+  let stored = '{}';
+  if (!body.reset) {
+    const cleanItems = {};
+    const rawItems = body.items && typeof body.items === 'object' ? body.items : {};
+    for (const m of MENU_SCHEMA) {
+      if (rawItems[m.id] && typeof rawItems[m.id] === 'object') {
+        const canApprove = Boolean(m.supportsApprove && rawItems[m.id].canApprove);
+        const canEdit = Boolean(rawItems[m.id].canEdit);
+        const canView = Boolean(rawItems[m.id].canView || canEdit || canApprove);
+        cleanItems[m.id] = { canView, canEdit, canApprove };
+      }
+    }
+    const cleanFlags = {};
+    const rawFlags = body.flags && typeof body.flags === 'object' ? body.flags : {};
+    for (const f of PERMISSION_FLAGS_SCHEMA) {
+      if (rawFlags[f.key] !== undefined) {
+        cleanFlags[f.key] = Boolean(rawFlags[f.key]);
+      }
+    }
+    stored = JSON.stringify({ items: cleanItems, flags: cleanFlags });
+  }
+
+  db.prepare('UPDATE users SET permissions_json = ? WHERE id = ?').run(stored, id);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  const matrix = buildUserPermissions(updated, config);
+  const visibleLabels = MENU_SCHEMA.filter((m) => matrix.items[m.id]?.canView)
+    .map((m) => m.label)
+    .join(', ');
+
+  logAudit(
+    db,
+    req.user,
+    body.reset ? 'RESET_PERMISOS_TRABAJADOR' : 'EDICION_PERMISOS_TRABAJADOR',
+    'Equipo y Turnos',
+    `${body.reset ? 'Restaurados permisos por rol' : 'Actualizados permisos granulares'} de ${target.full_name} (${target.role}). Módulos activos: ${visibleLabels || 'ninguno'}.`
+  );
+
+  res.json({
+    id,
+    permissions_json: stored,
+    permissions_matrix: matrix,
+    has_custom_permissions: matrix.hasCustomOverrides,
+  });
 });
 
 router.post('/staff', requireAuth, requireRole('jefe'), (req, res) => {
@@ -468,7 +569,14 @@ router.post('/shifts', requireAuth, requireRole('jefe'), (req, res) => {
   res.status(201).json({ id: Number(result.lastInsertRowid) });
 });
 
-router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (req, res) => {
+router.get('/overview', requireAuth, (req, res) => {
+  if (
+    req.user.role !== 'jefe' &&
+    req.user.role !== 'economico' &&
+    !req.user.permissions_matrix?.items?.['jefe-home']?.canView
+  ) {
+    return res.status(403).json({ error: 'Acceso restringido al Inicio del Negocio.' });
+  }
   const db = getDb();
   const today = getTodayIso();
   const period = getCurrentPeriod();
@@ -628,6 +736,16 @@ router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (req, res
       deposits: pendingDeposits,
       restocks: pendingRestocks,
       unvalidated_shifts: unvalidatedShifts,
+      price_requests: db
+        .prepare(
+          `SELECT pr.*, p.name AS product_name, p.sku, u.full_name AS created_by_name
+           FROM price_change_requests pr
+           JOIN products p ON p.id = pr.product_id
+           LEFT JOIN users u ON u.id = pr.created_by
+           WHERE pr.status = 'PENDIENTE_JEFE'
+           ORDER BY pr.id DESC`
+        )
+        .all(),
       affiliations_count: req.company?.id ? getPendingAffiliationsCount(req.company.id) : 0,
       orders: db
         .prepare(
@@ -654,6 +772,20 @@ router.get('/overview', requireAuth, requireRole('jefe', 'economico'), (req, res
       ),
       total_orders: Number(db.prepare(`SELECT COUNT(*) AS cnt FROM customer_orders`).get().cnt || 0),
     },
+    recent_audit: db.prepare(`SELECT * FROM audit_logs ORDER BY id DESC LIMIT 10`).all(),
+    closed_shifts_today: Number(
+      db
+        .prepare(`SELECT COUNT(*) AS cnt FROM shift_sessions WHERE work_date = ? AND status != 'ABIERTO'`)
+        .get(today).cnt || 0
+    ),
+    critical_products: db
+      .prepare(
+        `SELECT id, sku, name, unit, warehouse_stock, kiosk_stock, warehouse_min_stock, kiosk_min_stock, image_url
+         FROM products
+         WHERE active = 1 AND (kiosk_stock <= kiosk_min_stock OR warehouse_stock <= warehouse_min_stock)
+         ORDER BY kiosk_stock ASC LIMIT 8`
+      )
+      .all(),
     top_products: topProducts,
     automation_feed: automationFeed,
     staff_summary: staffSummary,

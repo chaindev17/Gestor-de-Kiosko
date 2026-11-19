@@ -550,13 +550,31 @@ export function seedDemoData(db) {
       },
     ];
 
+    const demoSpecs = {
+      'ALM-001': { compat: 'Canasta regulada · Res. 225 · paquete 1 kg', desc: 'Pollo troceado congelado de primera calidad, bolsa sellada de 1 kg.' },
+      'ALM-002': { compat: 'Botella PET 1 L · Res. 225 · cocina diaria', desc: 'Aceite vegetal refinado 100% puro, envase sellado de 1 litro.' },
+      'ALM-003': { compat: 'Leche entera 26% grasa · bolsa 1 kg · Res. 225', desc: 'Leche en polvo entera instantánea de alta disolución, bolsa 1 kg.' },
+      'ALM-004': { compat: 'Espagueti / codito sémola · paquete 500 g', desc: 'Pasta alimenticia de sémola de trigo duro, cocción 8 minutos.' },
+      'ALM-005': { compat: 'Picadillo condimentado · tubo 400 g · Res. 225', desc: 'Picadillo de ave refrigerado listo para cocinar, formato 400 g.' },
+      'ALM-006': { compat: 'Salchicha viena · paquete 10 u (340 g)', desc: 'Paquete sellado al vacío de 10 salchichas de pollo.' },
+      'ALM-007': { compat: 'Grano largo selecto · bolsa 1 kg', desc: 'Arroz blanco importado grano largo entero, limpio y rendidor.' },
+      'ALM-008': { compat: 'Tostado y molido · paquete 250 g · cafetera expreso/colador', desc: 'Café cubano aromático molido fino, apto para cafetera italiana y colador.' },
+      'BEB-009': { compat: 'Lata 355 ml fría · cola / naranja / limón', desc: 'Refresco gaseado bien frío en lata de 355 ml.' },
+      'BEB-010': { compat: 'Lata 330 ml fría · dispensador refrigerado', desc: 'Malta oscura nutritiva servida bien fría, lata 330 ml.' },
+      'BEB-011': { compat: 'Botella PET 1.5 L sellada · Ciego Montero', desc: 'Agua mineral natural cubana embotellada en origen, 1.5 litros.' },
+      'BEB-012': { compat: 'Tetrapak 200 ml con absorbente · merienda escolar', desc: 'Jugo de frutas tropicales en cajita individual de 200 ml.' },
+      'CON-013': { compat: 'Paquete familiar 200 g · merienda / desayuno', desc: 'Galletas dulces rellenas de crema, paquete sellado.' },
+      'ASE-014': { compat: 'Pastilla 110 g · uso diario piel todo tipo', desc: 'Jabón de tocador perfumado Suchel Camacho de 110 gramos.' },
+      'ASE-015': { compat: 'Lavado a mano y lavadora automática · bolsa 1 kg · Res. 225', desc: 'Detergente en polvo multiuso de alta espuma, apto para lavadora y lavado a mano.' },
+    };
+
     const insertProduct = db.prepare(
       `INSERT INTO products
-       (sku, name, category, unit, unit_cost_cup, indirect_cost_pct, sale_price_cup,
+       (sku, name, category, compatibility, unit, unit_cost_cup, indirect_cost_pct, sale_price_cup,
         is_price_capped, price_cap_cup, price_cap_resolution, is_margin_regulated, sales_tax_exempt,
         warehouse_stock, kiosk_stock, warehouse_min_stock, kiosk_min_stock, kiosk_target_stock,
-        current_batch, next_expiry_date, active)
-       VALUES (?, ?, ?, ?, ?, 8.0, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, 1)`
+        current_batch, next_expiry_date, catalog_description, catalog_visible, catalog_featured, active)
+       VALUES (?, ?, ?, ?, ?, ?, 8.0, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1)`
     );
 
     const insertMov = db.prepare(
@@ -573,11 +591,14 @@ export function seedDemoData(db) {
     let movIdx = 1;
 
     for (const item of catalog) {
+      const spec = demoSpecs[item.sku] || { compat: '', desc: '' };
+      const featured = ['ALM-001', 'ALM-002', 'ALM-008', 'BEB-010'].includes(item.sku) ? 1 : 0;
       const pid = Number(
         insertProduct.run(
           item.sku,
           item.name,
           item.category,
+          spec.compat,
           item.unit,
           item.cost,
           item.price,
@@ -590,7 +611,9 @@ export function seedDemoData(db) {
           item.kMin,
           item.kTarget,
           item.batch,
-          item.exp
+          item.exp,
+          spec.desc,
+          featured
         ).lastInsertRowid
       );
       productIds[item.sku] = { id: pid, ...item };

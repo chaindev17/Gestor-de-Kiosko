@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ArrowDownLeft,
+  ArrowUpRight,
   Calculator,
   CheckCircle2,
   Download,
@@ -9,9 +11,10 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { downloadCsv, formatCup, formatDate, formatDateTime, formatNumber } from '../lib/format.js';
+import { canUserAccess, hasPermissionFlag } from '../lib/permissions.js';
 import Modal from '../components/Modal.jsx';
 
-export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
+export default function ShiftIpvPage({ user, config, onRefreshBadges, notify }) {
   const [activeRes, setActiveRes] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [viewedBundle, setViewedBundle] = useState(null);
@@ -21,6 +24,32 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
   const [closingReg, setClosingReg] = useState(null);
   const [denoms, setDenoms] = useState({});
   const [closingNotes, setClosingNotes] = useState('');
+
+  // Cash movement modal (Entradas y Salidas operativas de caja)
+  const [cashMovModal, setCashMovModal] = useState(null);
+
+  async function submitCashMovement(e) {
+    e.preventDefault();
+    if (!cashMovModal) return;
+    setBusy(true);
+    try {
+      const res = await api.post(`/api/pos/registers/${cashMovModal.register.id}/cash-movement`, {
+        type: cashMovModal.type,
+        amount_cup: Number(cashMovModal.amount_cup),
+        reason: cashMovModal.reason,
+      });
+      notify(
+        `${cashMovModal.type === 'ENTRADA' ? 'Entrada' : 'Salida'} de ${formatCup(res.amount_cup)} registrada en Caja #${cashMovModal.register.register_number}. Efectivo esperado: ${formatCup(res.expected_cash_cup)}.`
+      );
+      setCashMovModal(null);
+      await load();
+      onRefreshBadges?.();
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Open shift/register modal state
   const [openModal, setOpenModal] = useState(false);
@@ -197,7 +226,8 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
   }
 
   const canOpen = user.role === 'vendedor' || user.role === 'jefe';
-  const canAudit = user.role === 'economico' || user.role === 'jefe';
+  const canAudit = canUserAccess(user, config, 'shift-ipv', 'canApprove');
+  const canDoCashMov = user.role === 'jefe' || hasPermissionFlag(user, config, 'cash_movements');
 
   return (
     <div className="space-y-6">
@@ -375,9 +405,25 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
                         <span className="text-[#66707D] block text-[11px]">EnZona QR</span>
                         <span className="font-semibold">{formatCup(reg.enzona_sales_cup)}</span>
                       </div>
+                      {(Number(reg.cash_in_cup) > 0 || Number(reg.cash_out_cup) > 0) && (
+                        <>
+                          <div>
+                            <span className="text-[#66707D] block text-[11px]">+ Entradas caja</span>
+                            <span className="font-semibold text-emerald-700">
+                              +{formatCup(reg.cash_in_cup || 0)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[#66707D] block text-[11px]">− Salidas caja</span>
+                            <span className="font-semibold text-red-700">
+                              −{formatCup(reg.cash_out_cup || 0)}
+                            </span>
+                          </div>
+                        </>
+                      )}
                     </div>
 
-                    <div className="border-t border-[#E6E2D8] pt-2.5 flex items-center justify-between text-xs tabular-nums">
+                    <div className="border-t border-[#E6E2D8] pt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums">
                       <div>
                         <span className="text-[#66707D]">Efectivo esperado en caja: </span>
                         <strong className="text-[#171C22]">{formatCup(reg.expected_cash_cup)}</strong>
@@ -389,8 +435,8 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
                                 reg.cash_difference_cup < -0.5
                                   ? 'text-red-700'
                                   : reg.cash_difference_cup > 0.5
-                                  ? 'text-amber-700'
-                                  : 'text-emerald-700'
+                                    ? 'text-amber-700'
+                                    : 'text-emerald-700'
                               }
                             >
                               {formatCup(reg.cash_difference_cup)}
@@ -398,21 +444,88 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
                           </p>
                         )}
                       </div>
-                      {canCloseThis && (
-                        <button
-                          type="button"
-                          onClick={() => startCloseRegister(reg)}
-                          className="btn-primary text-xs py-1.5 px-3 no-print"
-                        >
-                          <Lock className="h-3.5 w-3.5" />
-                          Arquear y Cerrar
-                        </button>
-                      )}
+                      <div className="flex flex-wrap items-center gap-1.5 no-print">
+                        {reg.status === 'ABIERTA' &&
+                          (user.role === 'jefe' || (canDoCashMov && reg.seller_id === user.id)) && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCashMovModal({
+                                    register: reg,
+                                    type: 'ENTRADA',
+                                    amount_cup: '',
+                                    reason: '',
+                                  })
+                                }
+                                title="Registrar entrada de efectivo (cambio, refuerzo de fondo)"
+                                className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 border border-emerald-200 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                              >
+                                <ArrowDownLeft className="h-3 w-3" /> Entrada
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCashMovModal({
+                                    register: reg,
+                                    type: 'SALIDA',
+                                    amount_cup: '',
+                                    reason: '',
+                                  })
+                                }
+                                title="Registrar salida de efectivo autorizada"
+                                className="inline-flex items-center gap-1 rounded-lg bg-amber-50 border border-amber-200 px-2 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100 cursor-pointer"
+                              >
+                                <ArrowUpRight className="h-3 w-3" /> Salida
+                              </button>
+                            </>
+                          )}
+                        {canCloseThis && (
+                          <button
+                            type="button"
+                            onClick={() => startCloseRegister(reg)}
+                            className="btn-primary text-xs py-1.5 px-3"
+                          >
+                            <Lock className="h-3.5 w-3.5" />
+                            Arquear y Cerrar
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
               })}
             </div>
+            {/* Movimientos de entrada/salida de efectivo en el turno */}
+            {(viewedBundle.cash_movements || []).length > 0 && (
+              <div className="border-t border-[#ECE8DE] pt-3 space-y-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[#66707D]">
+                  Entradas y Salidas operativas de efectivo ({viewedBundle.cash_movements.length})
+                </p>
+                <div className="space-y-1">
+                  {viewedBundle.cash_movements.map((cm) => (
+                    <div
+                      key={cm.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#FAF9F5] border border-[#EAE6DC] px-3 py-1.5 text-xs"
+                    >
+                      <span>
+                        <strong
+                          className={cm.type === 'ENTRADA' ? 'text-emerald-800' : 'text-amber-900'}
+                        >
+                          {cm.type === 'ENTRADA' ? '+ ENTRADA' : '− SALIDA'}
+                        </strong>{' '}
+                        · Caja #{cm.register_number} · {cm.reason}{' '}
+                        <span className="text-[#7B8491]">({cm.created_by_name || 'Usuario'})</span>
+                      </span>
+                      <span className="font-bold tabular-nums">
+                        {cm.type === 'ENTRADA' ? '+' : '−'}
+                        {formatCup(cm.amount_cup)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Official Cuban IPV Table */}
@@ -438,8 +551,9 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
                     <th className="px-3 py-2.5 text-center font-semibold">UM</th>
                     <th className="px-3 py-2.5 text-right font-semibold">Inicio</th>
                     <th className="px-3 py-2.5 text-right font-semibold">+ Entradas</th>
-                    <th className="px-3 py-2.5 text-right font-semibold">− Bajas</th>
-                    <th className="px-3 py-2.5 text-right font-semibold">Vendido</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">Devol.</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">− Mermas</th>
+                    <th className="px-3 py-2.5 text-right font-semibold">Ventas</th>
                     <th className="px-3 py-2.5 text-right font-semibold">Final</th>
                     <th className="px-3 py-2.5 text-right font-semibold">Precio CUP</th>
                     <th className="px-4 py-2.5 text-right font-semibold">Importe CUP</th>
@@ -460,6 +574,9 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
                       <td className="px-3 py-2 text-right">{formatNumber(row.opening_qty)}</td>
                       <td className="px-3 py-2 text-right text-emerald-700">
                         {row.entries_qty > 0 ? `+${formatNumber(row.entries_qty)}` : '0'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-blue-700">
+                        {row.returned_qty > 0 ? formatNumber(row.returned_qty) : '0'}
                       </td>
                       <td className="px-3 py-2 text-right text-red-700">
                         {row.losses_qty > 0 ? `-${formatNumber(row.losses_qty)}` : '0'}
@@ -687,6 +804,86 @@ export default function ShiftIpvPage({ user, onRefreshBadges, notify }) {
               <button type="submit" disabled={busy} className="btn-primary text-xs">
                 <Calculator className="h-3.5 w-3.5" />
                 Confirmar arqueo y cerrar caja
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+      {/* Modal: Entrada o Salida de Efectivo en Caja */}
+      <Modal
+        open={Boolean(cashMovModal)}
+        onClose={() => setCashMovModal(null)}
+        title={
+          cashMovModal
+            ? `${cashMovModal.type === 'ENTRADA' ? 'Entrada' : 'Salida'} de Efectivo — Caja #${cashMovModal.register.register_number}`
+            : ''
+        }
+        subtitle={
+          cashMovModal
+            ? `Cajero: ${cashMovModal.register.seller_name} · Efectivo esperado actual: ${formatCup(cashMovModal.register.expected_cash_cup)}`
+            : ''
+        }
+      >
+        {cashMovModal && (
+          <form onSubmit={submitCashMovement} className="space-y-3.5 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              {['ENTRADA', 'SALIDA'].map((tp) => (
+                <button
+                  key={tp}
+                  type="button"
+                  onClick={() => setCashMovModal((m) => ({ ...m, type: tp }))}
+                  className={`rounded-xl py-2 font-bold border cursor-pointer ${
+                    cashMovModal.type === tp
+                      ? tp === 'ENTRADA'
+                        ? 'bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-amber-700 text-white border-amber-700'
+                      : 'bg-white text-slate-600 border-slate-200'
+                  }`}
+                >
+                  {tp === 'ENTRADA' ? '+ Entrada a caja' : '− Salida de caja'}
+                </button>
+              ))}
+            </div>
+            <label className="block">
+              <span className="font-semibold text-slate-700">Importe en CUP *</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                value={cashMovModal.amount_cup}
+                onChange={(e) => setCashMovModal({ ...cashMovModal, amount_cup: e.target.value })}
+                placeholder="Ej. 500"
+                className="input-field mt-1 font-bold"
+              />
+            </label>
+            <label className="block">
+              <span className="font-semibold text-slate-700">
+                Motivo / Justificación (queda auditado con tu usuario) *
+              </span>
+              <input
+                required
+                minLength={4}
+                value={cashMovModal.reason}
+                onChange={(e) => setCashMovModal({ ...cashMovModal, reason: e.target.value })}
+                placeholder={
+                  cashMovModal.type === 'ENTRADA'
+                    ? 'Ej. Refuerzo de menudo / cambio para mostrador'
+                    : 'Ej. Pago de hielo / mensajería autorizada'
+                }
+                className="input-field mt-1"
+              />
+            </label>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setCashMovModal(null)}
+                className="btn-secondary text-xs"
+              >
+                Cancelar
+              </button>
+              <button type="submit" disabled={busy} className="btn-primary text-xs">
+                {busy ? 'Registrando...' : 'Registrar movimiento de caja'}
               </button>
             </div>
           </form>

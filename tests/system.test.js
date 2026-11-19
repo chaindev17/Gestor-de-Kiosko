@@ -526,4 +526,291 @@ test('10. Catálogo público para clientes, pedido directo a WhatsApp y cobro en
   assert.equal(acct.data.trial_totals.is_balanced, true, 'Accounting stays strictly balanced after WhatsApp order checkout');
 });
 
+test('11. Menú completo 13 módulos + Matriz real de permisos granulares {canView, canEdit, canApprove} por trabajador', async () => {
+  const { MENU_SCHEMA, canUserAccess } = await import('../src/lib/permissions.js');
+  const exactLabels = MENU_SCHEMA.map((m) => m.label);
+  assert.deepEqual(exactLabels, [
+    'Inicio del Negocio',
+    'Mi Empresa y Modo',
+    'Equipo y Turnos',
+    'Mostrador (POS)',
+    'Turnos, Cajas e IPV',
+    'Almacén y Stock',
+    'Precios y Tablilla',
+    'Catálogo y Pedidos',
+    'Cobros QR y Banco',
+    'Tributos ONAT',
+    'Nómina y Comisiones',
+    'Contabilidad NCIF',
+    'Leyes e Inspección',
+  ]);
+  const pricingIdx = exactLabels.indexOf('Precios y Tablilla');
+  assert.equal(exactLabels[pricingIdx + 1], 'Catálogo y Pedidos', 'Catálogo y Pedidos must be directly below Precios y Tablilla');
+
+  // Jefe sees all 13 modules; vendedor sees only operational subset
+  const jefeMe = await req('GET', '/api/auth/me', { token: tokens.jefe });
+  const vendMe = await req('GET', '/api/auth/me', { token: tokens.vendedor1 });
+  const visibleFor = (u, c) => MENU_SCHEMA.filter((m) => canUserAccess(u, c, m.id, 'canView'));
+  assert.equal(visibleFor(jefeMe.data.user, jefeMe.data.config).length, 13);
+  const vendVisibleIds = visibleFor(vendMe.data.user, vendMe.data.config).map((m) => m.id);
+  assert.ok(vendVisibleIds.includes('pos'));
+  assert.ok(vendVisibleIds.includes('shift-ipv'));
+  assert.ok(vendVisibleIds.includes('catalog-wa'));
+  assert.ok(!vendVisibleIds.includes('jefe-home'));
+  assert.ok(!vendVisibleIds.includes('workspace-settings'));
+  assert.ok(!vendVisibleIds.includes('onat'));
+  assert.ok(!vendVisibleIds.includes('accounting'));
+
+  // By default vendedor1 can consult public Tablilla with ZERO costs/margins, cannot edit prices, and cannot view Compliance
+  const tablilla = await req('GET', '/api/finance/cost-sheets', { token: tokens.vendedor1 });
+  assert.equal(tablilla.status, 200);
+  assert.equal(tablilla.data.can_view_costs, false);
+  assert.equal(tablilla.data.items[0].unit_cost_cup, null);
+  assert.equal(tablilla.data.items[0].cost_sheet?.margin_pct ?? null, null);
+  assert.ok(tablilla.data.items[0].sale_price_cup > 0);
+  assert.equal((await req('POST', '/api/finance/auto-optimize-prices', { token: tokens.vendedor1, body: {} })).status, 403);
+  assert.equal((await req('GET', '/api/finance/compliance', { token: tokens.vendedor1 })).status, 403);
+
+  // Jefe customizes vendedor1 matrix: grants read-only Leyes e Inspección + revokes Precios y Tablilla
+  const staffRes = await req('GET', '/api/config/staff', { token: tokens.jefe });
+  const vendStaff = staffRes.data.staff.find((s) => s.username === 'vendedor1');
+  const grantRes = await req('PUT', `/api/config/staff/${vendStaff.id}/permissions`, {
+    token: tokens.jefe,
+    body: {
+      items: {
+        compliance: { canView: true, canEdit: false, canApprove: false },
+        pricing: { canView: false, canEdit: false, canApprove: false },
+      },
+      flags: {
+        view_costs: false,
+        cash_movements: false,
+      },
+    },
+  });
+  assert.equal(grantRes.status, 200);
+  assert.equal(grantRes.data.has_custom_permissions, true);
+
+  // Real-time enforcement: compliance is now 200, pricing is now 403, ONAT remains 403
+  assert.equal((await req('GET', '/api/finance/compliance', { token: tokens.vendedor1 })).status, 200);
+  assert.equal((await req('GET', '/api/finance/cost-sheets', { token: tokens.vendedor1 })).status, 403);
+  assert.equal((await req('GET', '/api/finance/onat', { token: tokens.vendedor1 })).status, 403);
+
+  // Jefe resets vendedor1 back to role defaults
+  const resetRes = await req('PUT', `/api/config/staff/${vendStaff.id}/permissions`, {
+    token: tokens.jefe,
+    body: { reset: true },
+  });
+  assert.equal(resetRes.status, 200);
+  assert.equal(resetRes.data.has_custom_permissions, false);
+  assert.equal((await req('GET', '/api/finance/compliance', { token: tokens.vendedor1 })).status, 403);
+  assert.equal((await req('GET', '/api/finance/cost-sheets', { token: tokens.vendedor1 })).status, 200);
+});
+
+test('12. Privacidad estricta de costos/márgenes/proveedores + Propuesta y aprobación de precio por el Jefe', async () => {
+  // Dependiente POS: sees only product, stock, sale_price_cup, photo, compatibility — ZERO costs or suppliers
+  const posView = await req('GET', '/api/warehouse/products', { token: tokens.vendedor1 });
+  assert.equal(posView.status, 200);
+  assert.equal(posView.data.privacy.canViewEntryCost, false);
+  assert.equal(posView.data.privacy.canViewGlobalCosts, false);
+  assert.equal(posView.data.products[0].unit_cost_cup, null);
+  assert.equal(posView.data.products[0].cost_sheet, null);
+  assert.equal(posView.data.fx_rates, null);
+
+  // Almacenero: sees entry cost for warehouse receipts, CANNOT see global margins/valuation, and price proposals go to Jefe
+  const almView = await req('GET', '/api/warehouse/products', { token: tokens.almacenero });
+  assert.equal(almView.status, 200);
+  assert.equal(almView.data.privacy.canViewEntryCost, true);
+  assert.equal(almView.data.privacy.canViewGlobalCosts, false);
+  assert.equal(almView.data.fx_rates, null);
+  assert.ok(almView.data.products[0].unit_cost_cup > 0);
+  assert.equal(almView.data.products[0].cost_sheet.margin_pct, undefined, 'Almacenero must not see global margin');
+
+  // Almacenero proposes a new sale price on a non-capped product -> stays PENDIENTE_JEFE
+  const target = almView.data.products.find((p) => !p.is_price_capped);
+  const oldPrice = target.sale_price_cup;
+  const proposedPrice = Math.floor(target.unit_cost_cup * 1.28);
+  const finalProposed = proposedPrice === oldPrice ? proposedPrice - 2 : proposedPrice;
+  const fichaProp = await req('PUT', `/api/warehouse/products/${target.id}/ficha`, {
+    token: tokens.almacenero,
+    body: {
+      sale_price_cup: finalProposed,
+      price_reason: 'Nuevo lote de proveedor con ajuste operativo',
+    },
+  });
+  assert.equal(fichaProp.status, 200, JSON.stringify(fichaProp.data));
+  assert.equal(fichaProp.data.price_status, 'PENDING_APPROVAL');
+  assert.equal(fichaProp.data.sale_price_cup, oldPrice, 'Sale price must NOT change until Jefe approves');
+
+  // Jefe sees pending price request & approves it -> sale price updates and logs history
+  const sheets = await req('GET', '/api/finance/cost-sheets', { token: tokens.jefe });
+  const pendingReq = sheets.data.history.find(
+    (r) => r.product_id === target.id && r.status === 'PENDIENTE_JEFE'
+  );
+  assert.ok(pendingReq, 'Pending price request is visible to Jefe');
+
+  const decide = await req('POST', `/api/finance/price-requests/${pendingReq.id}/decide`, {
+    token: tokens.jefe,
+    body: { decision: 'APROBADO', note: 'Verificado contra factura de entrada' },
+  });
+  assert.equal(decide.status, 200, JSON.stringify(decide.data));
+  const afterSheets = await req('GET', '/api/finance/cost-sheets', { token: tokens.jefe });
+  assert.equal(
+    afterSheets.data.items.find((p) => p.id === target.id).sale_price_cup,
+    finalProposed
+  );
+});
+
+test('13. Entrada a almacén en 1 paso con foto WebP + compatibilidad + sincronización automática a Catálogo (stock=0 Agotado)', async () => {
+  // Tiny valid WebP base64 data URL (simulating browser compressor output)
+  const tinyWebp =
+    'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=';
+
+  // Create new product + image + compatibility + direct KIOSKO entry in ONE step
+  const created = await req('POST', '/api/warehouse/products/create-with-entry', {
+    token: tokens.unionOwner,
+    body: {
+      name: 'Batería Litio YTX7A-BS 12V',
+      category: 'Piezas y Accesorios',
+      unit: 'u',
+      description: 'Batería sellada libre de mantenimiento con garantía.',
+      compatibility: 'Motos eléctricas Mishozuki, Bucatti y scooters 125cc',
+      image_url: tinyWebp,
+      catalog_visible: true,
+      catalog_featured: true,
+      sale_price_cup: 9500,
+      destination: 'KIOSKO',
+      quantity: 2,
+      unit_cost_cup: 7600,
+      freight_cup: 200,
+      payment_method: 'CREDITO',
+      invoice_number: 'FAC-BAT-01',
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.data));
+  assert.match(created.data.doc_number, /^SC204-/);
+  assert.equal(created.data.kiosk_stock, 2);
+  assert.equal(created.data.has_photo, true);
+
+  // Public catalog exposes photo, compatibility, sale_price_cup & stock — NEVER unit_cost_cup or supplier
+  const pub1 = await req('GET', `/api/catalog/${encodeURIComponent(tokens.unionCode)}`);
+  assert.equal(pub1.status, 200);
+  const pubItem = pub1.data.products.find((p) => p.id === created.data.id);
+  assert.ok(pubItem, 'New product with photo appears immediately in Public Catalog');
+  assert.equal(pubItem.image_url, tinyWebp);
+  assert.equal(pubItem.compatibility, 'Motos eléctricas Mishozuki, Bucatti y scooters 125cc');
+  assert.equal(pubItem.available_stock, 2);
+  assert.equal(pubItem.in_stock, true);
+  assert.equal(pubItem.unit_cost_cup, undefined, 'Public catalog NEVER exposes cost');
+  assert.equal(pubItem.supplier_name, undefined, 'Public catalog NEVER exposes supplier');
+
+  // Oversized image (>750 KB) is cleanly rejected
+  const hugeImg = 'data:image/jpeg;base64,' + 'A'.repeat(1_100_000);
+  const badImg = await req('PUT', `/api/warehouse/products/${created.data.id}/ficha`, {
+    token: tokens.unionOwner,
+    body: { image_url: hugeImg },
+  });
+  assert.equal(badImg.status, 400);
+
+  // Sell all 2 units via catalog checkout -> stock reaches 0 -> automatically marked in_stock: false (Agotado)
+  const ord = await req('POST', `/api/catalog/${encodeURIComponent(tokens.unionCode)}/orders`, {
+    body: {
+      customer_name: 'Carlos Mecánico',
+      customer_phone: '55112233',
+      delivery_type: 'RECOGIDA',
+      payment_method: 'TRANSFERMOVIL',
+      items: [{ product_id: created.data.id, quantity: 2 }],
+    },
+  });
+  assert.equal(ord.status, 201);
+  const chk = await req('POST', `/api/catalog-admin/orders/${ord.data.order.id}/checkout`, {
+    token: tokens.unionOwner,
+    body: { payment_method: 'TRANSFERMOVIL', payment_reference: 'TM-BAT-999' },
+  });
+  assert.equal(chk.status, 200);
+
+  // Enable catalog_show_out_of_stock: shows item as Agotado (in_stock: false, available_stock: 0)
+  await req('PUT', '/api/platform/company/governance', {
+    token: tokens.unionOwner,
+    body: { catalog_show_out_of_stock: true, catalog_show_stock_qty: false },
+  });
+  const pubSoldOut = await req('GET', `/api/catalog/${encodeURIComponent(tokens.unionCode)}`);
+  assert.equal(pubSoldOut.data.store.catalog_show_stock_qty, false);
+  const agotado = pubSoldOut.data.products.find((p) => p.id === created.data.id);
+  assert.ok(agotado, 'Item shows as Agotado when catalog_show_out_of_stock is true');
+  assert.equal(agotado.in_stock, false);
+  assert.equal(agotado.available_stock, 0);
+
+  // Disable catalog_show_out_of_stock: sold-out item hides automatically
+  await req('PUT', '/api/platform/company/governance', {
+    token: tokens.unionOwner,
+    body: { catalog_show_out_of_stock: false },
+  });
+  const pubHidden = await req('GET', `/api/catalog/${encodeURIComponent(tokens.unionCode)}`);
+  assert.ok(!pubHidden.data.products.some((p) => p.id === created.data.id));
+});
+
+test('14. Entradas/salidas de caja en turno + Modo de operación y tasas referenciales CUP/USD/MLC/EUR + Dashboard bitácora', async () => {
+  // Update operation mode + FX reference rates (official currency always CUP)
+  const gov = await req('PUT', '/api/platform/company/governance', {
+    token: tokens.jefe,
+    body: {
+      operation_mode: 'MULTICAJA',
+      strict_ipv_control: true,
+      show_fx_reference: true,
+      rate_usd_cup: 330,
+      rate_mlc_cup: 270,
+      rate_eur_cup: 350,
+    },
+  });
+  assert.equal(gov.status, 200);
+  assert.equal(gov.data.config.operation_mode, 'MULTICAJA');
+  assert.equal(gov.data.config.rate_usd_cup, 330);
+  assert.equal(Boolean(gov.data.config.show_fx_reference), true);
+
+  // Open or use active shift register on unionOwner's company & test cash ENTRADA / SALIDA
+  let curShift = await req('GET', '/api/pos/active-shift', { token: tokens.unionOwner });
+  if (!curShift.data.active) {
+    const tplId = curShift.data.shift_templates[0].id;
+    const opened = await req('POST', '/api/pos/shifts/open', {
+      token: tokens.unionOwner,
+      body: { shift_template_id: tplId, opening_cash_cup: 2000 },
+    });
+    assert.equal(opened.status, 201, JSON.stringify(opened.data));
+    curShift = await req('GET', '/api/pos/active-shift', { token: tokens.unionOwner });
+  }
+  const openReg = (curShift.data.active?.registers || []).find((r) => r.status === 'ABIERTA');
+  assert.ok(openReg, 'Has an open register');
+
+  const inRes = await req('POST', `/api/pos/registers/${openReg.id}/cash-movement`, {
+    token: tokens.unionOwner,
+    body: { type: 'ENTRADA', amount_cup: 500, reason: 'Refuerzo de menudo en billetes de $20 y $50' },
+  });
+  assert.equal(inRes.status, 201, JSON.stringify(inRes.data));
+
+  const outRes = await req('POST', `/api/pos/registers/${openReg.id}/cash-movement`, {
+    token: tokens.unionOwner,
+    body: { type: 'SALIDA', amount_cup: 150, reason: 'Compra de bolsas de nailon para mostrador' },
+  });
+  assert.equal(outRes.status, 201, JSON.stringify(outRes.data));
+
+  const afterShift = await req('GET', '/api/pos/active-shift', { token: tokens.unionOwner });
+  const updatedReg = afterShift.data.active.registers.find((r) => r.id === openReg.id);
+  assert.equal(updatedReg.cash_in_cup, Number(openReg.cash_in_cup || 0) + 500);
+  assert.equal(updatedReg.cash_out_cup, Number(openReg.cash_out_cup || 0) + 150);
+  assert.equal((afterShift.data.active.cash_movements || []).length >= 2, true);
+
+  // Verify Jefe Dashboard overview contains CUP payment channel breakdown + audit log
+  const ov = await req('GET', '/api/config/overview', { token: tokens.jefe });
+  assert.equal(ov.status, 200);
+  assert.equal(typeof ov.data.today_sales.cash_cup, 'number');
+  assert.equal(typeof ov.data.today_sales.transfermovil_cup, 'number');
+  assert.equal(typeof ov.data.today_sales.enzona_cup, 'number');
+  assert.ok(Array.isArray(ov.data.recent_audit) && ov.data.recent_audit.length > 0);
+
+  // Final accounting balance check across all operations
+  const acct = await req('GET', '/api/finance/accounting', { token: tokens.jefe });
+  assert.equal(acct.data.trial_totals.is_balanced, true, 'Trial balance stays 100% balanced');
+});
+
+
 

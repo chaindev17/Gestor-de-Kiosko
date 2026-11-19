@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDb, nextDocCode, roundCup, runInTransaction } from '../db.js';
-import { logAudit, logAutomation, requireAuth, requireRole } from '../auth.js';
+import { logAudit, logAutomation, requireAuth, requirePermission, requireRole } from '../auth.js';
 import {
   CUP_DENOMINATIONS,
   NCIF_ACCOUNTS,
@@ -79,16 +79,65 @@ function loadSessionBundle(db, sessionId) {
     items: getItems.all(s.id),
   }));
 
+  const cashMovements = db
+    .prepare(
+      `SELECT cm.*, sr.register_number, u.full_name AS created_by_name
+       FROM cash_movements cm
+       JOIN shift_registers sr ON sr.id = cm.shift_register_id
+       LEFT JOIN users u ON u.id = cm.created_by
+       WHERE cm.shift_session_id = ?
+       ORDER BY cm.id DESC`
+    )
+    .all(sessionId);
+
+  const registersWithCash = registers.map((r) => {
+    const movs = cashMovements.filter((m) => m.shift_register_id === r.id);
+    const cash_in_cup = roundCup(
+      movs.filter((m) => m.type === 'ENTRADA').reduce((a, m) => a + m.amount_cup, 0)
+    );
+    const cash_out_cup = roundCup(
+      movs.filter((m) => m.type === 'SALIDA').reduce((a, m) => a + m.amount_cup, 0)
+    );
+    return { ...r, cash_in_cup, cash_out_cup };
+  });
+
+  // Compute voided/returned units per product during this shift
+  const returnedRows = db
+    .prepare(
+      `SELECT si.product_id, COALESCE(SUM(si.quantity), 0) AS returned_qty
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id
+       WHERE s.shift_session_id = ? AND s.status = 'ANULADA'
+       GROUP BY si.product_id`
+    )
+    .all(sessionId);
+  const retMap = new Map(returnedRows.map((r) => [r.product_id, roundCup(r.returned_qty)]));
+  const enrichedIpv = ipv.map((row) => ({
+    ...row,
+    returned_qty: retMap.get(row.product_id) || 0,
+  }));
+
   const totals = {
-    total_sales_cup: roundCup(registers.reduce((a, r) => a + r.total_sales_cup, 0)),
-    cash_sales_cup: roundCup(registers.reduce((a, r) => a + r.cash_sales_cup, 0)),
-    transfermovil_sales_cup: roundCup(registers.reduce((a, r) => a + r.transfermovil_sales_cup, 0)),
-    enzona_sales_cup: roundCup(registers.reduce((a, r) => a + r.enzona_sales_cup, 0)),
-    sales_count: registers.reduce((a, r) => a + r.sales_count, 0),
-    ipv_sold_amount_cup: roundCup(ipv.reduce((a, i) => a + i.sold_amount_cup, 0)),
+    total_sales_cup: roundCup(registersWithCash.reduce((a, r) => a + r.total_sales_cup, 0)),
+    cash_sales_cup: roundCup(registersWithCash.reduce((a, r) => a + r.cash_sales_cup, 0)),
+    transfermovil_sales_cup: roundCup(
+      registersWithCash.reduce((a, r) => a + r.transfermovil_sales_cup, 0)
+    ),
+    enzona_sales_cup: roundCup(registersWithCash.reduce((a, r) => a + r.enzona_sales_cup, 0)),
+    cash_in_cup: roundCup(registersWithCash.reduce((a, r) => a + r.cash_in_cup, 0)),
+    cash_out_cup: roundCup(registersWithCash.reduce((a, r) => a + r.cash_out_cup, 0)),
+    sales_count: registersWithCash.reduce((a, r) => a + r.sales_count, 0),
+    ipv_sold_amount_cup: roundCup(enrichedIpv.reduce((a, i) => a + i.sold_amount_cup, 0)),
   };
 
-  return { session, registers, ipv, sales: salesWithItems, totals };
+  return {
+    session,
+    registers: registersWithCash,
+    ipv: enrichedIpv,
+    sales: salesWithItems,
+    cash_movements: cashMovements,
+    totals,
+  };
 }
 
 router.get('/active-shift', requireAuth, (_req, res) => {
@@ -798,9 +847,92 @@ router.post('/registers/:id/close', requireAuth, requireRole('vendedor', 'jefe')
 });
 
 /**
+ * Registra una Entrada o Salida operativa de efectivo en una caja abierta (cambio, gasto menor autorizado, aporte de fondo).
+ */
+router.post('/registers/:id/cash-movement', requireAuth, (req, res) => {
+  const db = getDb();
+  const id = Number(req.params.id);
+  const reg = db
+    .prepare(
+      `SELECT sr.*, ss.session_code, ss.status AS shift_status, u.full_name AS seller_name
+       FROM shift_registers sr
+       JOIN shift_sessions ss ON ss.id = sr.shift_session_id
+       JOIN users u ON u.id = sr.seller_id
+       WHERE sr.id = ?`
+    )
+    .get(id);
+
+  if (!reg) return res.status(404).json({ error: 'Caja de turno no encontrada.' });
+  if (reg.status !== 'ABIERTA' || reg.shift_status !== 'ABIERTO') {
+    return res.status(400).json({ error: 'Solo se admiten movimientos de efectivo en una caja abierta.' });
+  }
+
+  const isOwner = req.user.role === 'jefe';
+  const canCashFlag = Boolean(req.user.permissions_matrix?.flags?.cash_movements);
+  const canApproveShift = Boolean(req.user.permissions_matrix?.items?.['shift-ipv']?.canApprove);
+  if (!isOwner && !canApproveShift) {
+    if (!canCashFlag || reg.seller_id !== req.user.id) {
+      return res
+        .status(403)
+        .json({ error: 'Solo el cajero titular con permiso o el Jefe pueden registrar entradas/salidas en esta caja.' });
+    }
+  }
+
+  const type = String(req.body?.type || '').toUpperCase();
+  const amount = roundCup(req.body?.amount_cup);
+  const reason = String(req.body?.reason || '').trim();
+
+  if (!['ENTRADA', 'SALIDA'].includes(type)) {
+    return res.status(400).json({ error: 'Seleccione tipo de movimiento: ENTRADA o SALIDA.' });
+  }
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ error: 'Ingrese un importe en CUP mayor que cero.' });
+  }
+  if (reason.length < 4) {
+    return res.status(400).json({ error: 'Indique el motivo de la entrada o salida de caja (mín. 4 caracteres).' });
+  }
+  if (type === 'SALIDA' && amount > reg.expected_cash_cup + 0.01) {
+    return res.status(400).json({
+      error: `Efectivo insuficiente en Caja #${reg.register_number} (disponible ${reg.expected_cash_cup.toFixed(2)} CUP).`,
+    });
+  }
+
+  const delta = type === 'ENTRADA' ? amount : -amount;
+  const nextExpected = roundCup(reg.expected_cash_cup + delta);
+
+  const movId = runInTransaction(db, () => {
+    const r = db
+      .prepare(
+        `INSERT INTO cash_movements (shift_session_id, shift_register_id, type, amount_cup, reason, created_by)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(reg.shift_session_id, reg.id, type, amount, reason, req.user.id);
+
+    db.prepare(`UPDATE shift_registers SET expected_cash_cup = ? WHERE id = ?`).run(nextExpected, reg.id);
+
+    logAudit(
+      db,
+      req.user,
+      type === 'ENTRADA' ? 'ENTRADA_CAJA' : 'SALIDA_CAJA',
+      'Turnos, Cajas e IPV',
+      `${type} de ${amount.toFixed(2)} CUP en Caja #${reg.register_number} (${reg.session_code}): ${reason}. Efectivo esperado: ${nextExpected.toFixed(2)} CUP.`
+    );
+    return Number(r.lastInsertRowid);
+  });
+
+  res.status(201).json({
+    id: movId,
+    type,
+    amount_cup: amount,
+    expected_cash_cup: nextExpected,
+    active: loadSessionBundle(db, reg.shift_session_id),
+  });
+});
+
+/**
  * Económico or Jefe audits and validates a closed shift session.
  */
-router.post('/shifts/:id/audit', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/shifts/:id/audit', requireAuth, requirePermission('shift-ipv', 'canApprove'), (req, res) => {
   const db = getDb();
   const id = Number(req.params.id);
   const session = db.prepare(`SELECT * FROM shift_sessions WHERE id = ?`).get(id);

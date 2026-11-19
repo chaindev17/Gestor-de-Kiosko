@@ -4,6 +4,8 @@
  * cuando el servidor Node.js/SQLite no está presente.
  */
 
+import { buildUserPermissions, MENU_SCHEMA, PERMISSION_FLAGS_SCHEMA } from './permissions.js';
+
 const STORAGE_KEY = 'gestor_kiosko_cuba_state_v1';
 
 const NCIF = {
@@ -583,7 +585,16 @@ export function enrichUser(s, u) {
   if (!u) return null;
   const st = s.shifts.find((x) => x.id === u.shift_template_id);
   const { pw: _pw, ...safe } = u;
-  return { ...safe, shift_name: st?.name || null, shift_code: st?.code || null, start_time: st?.start_time || null, end_time: st?.end_time || null };
+  const matrix = buildUserPermissions(safe, s.config || {});
+  return {
+    ...safe,
+    shift_name: st?.name || null,
+    shift_code: st?.code || null,
+    start_time: st?.start_time || null,
+    end_time: st?.end_time || null,
+    permissions_matrix: matrix,
+    has_custom_permissions: matrix.hasCustomOverrides,
+  };
 }
 
 function execSale(s, body, user, silent = false) {
@@ -892,6 +903,7 @@ export function getBadges(s, overrideAffiliations) {
   return {
     pending_restocks: s.restocks.filter((r) => r.status === 'PENDIENTE').length,
     pending_mermas: s.movements.filter((m) => m.status === 'PENDIENTE_APROBACION').length,
+    pending_prices: (s.priceHistory || []).filter((p) => p.status === 'PENDIENTE_JEFE').length,
     pending_deposits: s.deposits.filter((d) => d.status === 'PENDIENTE').length,
     unreconciled_qr: s.sales.filter((x) => !x.reconciled && (x.transfermovil_amount_cup > 0 || x.enzona_amount_cup > 0)).length,
     unvalidated_shifts: s.sessions.filter((x) => x.status === 'CERRADO').length,
@@ -909,17 +921,34 @@ function sessionBundle(s, id) {
   const sess = s.sessions.find((x) => x.id === Number(id));
   if (!sess) return null;
   const st = s.shifts.find((x) => x.id === sess.shift_template_id);
+  const cashMovs = (s.cash_movements || [])
+    .filter((m) => m.shift_session_id === sess.id)
+    .slice()
+    .reverse();
   const regs = s.registers
     .filter((r) => r.shift_session_id === sess.id)
     .map((r) => {
       const u = s.users.find((z) => z.id === r.seller_id);
-      return { ...r, seller_name: u?.full_name || '', seller_ci: u?.ci || '' };
+      const rm = cashMovs.filter((m) => m.shift_register_id === r.id);
+      const cash_in_cup = r2(rm.filter((m) => m.type === 'ENTRADA').reduce((a, m) => a + m.amount_cup, 0));
+      const cash_out_cup = r2(rm.filter((m) => m.type === 'SALIDA').reduce((a, m) => a + m.amount_cup, 0));
+      return { ...r, seller_name: u?.full_name || '', seller_ci: u?.ci || '', cash_in_cup, cash_out_cup };
     });
   const ipv = s.ipvs
     .filter((i) => i.shift_session_id === sess.id)
     .map((i) => {
-      const p = s.products.find((z) => z.id === i.product_id);
-      return { ...i, sku: p.sku, product_name: p.name, category: p.category, unit: p.unit, is_price_capped: p.is_price_capped, kiosk_min_stock: p.kiosk_min_stock };
+      const p = s.products.find((z) => z.id === i.product_id) || {};
+      return {
+        ...i,
+        returned_qty: i.returned_qty || 0,
+        sku: p.sku || '',
+        product_name: p.name || '',
+        category: p.category || '',
+        unit: p.unit || 'u',
+        is_price_capped: p.is_price_capped,
+        kiosk_min_stock: p.kiosk_min_stock ?? 3,
+        warehouse_stock: p.warehouse_stock ?? 0,
+      };
     });
   const sales = s.sales.filter((x) => x.shift_session_id === sess.id).slice().reverse();
   return {
@@ -927,8 +956,15 @@ function sessionBundle(s, id) {
     registers: regs,
     ipv,
     sales,
+    cash_movements: cashMovs,
     totals: {
       total_sales_cup: r2(regs.reduce((a, r) => a + r.total_sales_cup, 0)),
+      cash_sales_cup: r2(regs.reduce((a, r) => a + (r.cash_sales_cup || 0), 0)),
+      transfermovil_sales_cup: r2(regs.reduce((a, r) => a + (r.transfermovil_sales_cup || 0), 0)),
+      enzona_sales_cup: r2(regs.reduce((a, r) => a + (r.enzona_sales_cup || 0), 0)),
+      cash_in_cup: r2(regs.reduce((a, r) => a + (r.cash_in_cup || 0), 0)),
+      cash_out_cup: r2(regs.reduce((a, r) => a + (r.cash_out_cup || 0), 0)),
+      sales_count: regs.reduce((a, r) => a + (r.sales_count || 0), 0),
       ipv_sold_amount_cup: r2(ipv.reduce((a, i) => a + i.sold_amount_cup, 0)),
     },
   };
@@ -1033,6 +1069,40 @@ export function handleStaticApi(method, rawPath, body = {}) {
     });
     return finish({ id });
   }
+  if (p.startsWith('/api/config/staff/') && p.endsWith('/permissions') && method === 'PUT') {
+    if (user.role !== 'jefe') err400('Solo el Jefe del Negocio puede modificar permisos.', 403);
+    const id = Number(p.split('/')[4]);
+    const emp = s.users.find((u) => u.id === id);
+    if (!emp) err400('Trabajador no encontrado.', 404);
+    if (emp.role === 'jefe') err400('El Jefe conserva siempre acceso total.');
+    if (body.reset) {
+      emp.permissions_json = '{}';
+    } else {
+      const cleanItems = {};
+      for (const m of MENU_SCHEMA) {
+        if (body.items?.[m.id]) {
+          const canApprove = Boolean(m.supportsApprove && body.items[m.id].canApprove);
+          const canEdit = Boolean(body.items[m.id].canEdit);
+          const canView = Boolean(body.items[m.id].canView || canEdit || canApprove);
+          cleanItems[m.id] = { canView, canEdit, canApprove };
+        }
+      }
+      const cleanFlags = {};
+      for (const f of PERMISSION_FLAGS_SCHEMA) {
+        if (body.flags?.[f.key] !== undefined) cleanFlags[f.key] = Boolean(body.flags[f.key]);
+      }
+      emp.permissions_json = JSON.stringify({ items: cleanItems, flags: cleanFlags });
+    }
+    const matrix = buildUserPermissions(emp, s.config);
+    addAudit(
+      s,
+      user,
+      body.reset ? 'RESET_PERMISOS_TRABAJADOR' : 'EDICION_PERMISOS_TRABAJADOR',
+      'Equipo y Turnos',
+      `Actualizados permisos granulares de ${emp.full_name} (${emp.role}).`
+    );
+    return finish({ id, permissions_json: emp.permissions_json, permissions_matrix: matrix, has_custom_permissions: matrix.hasCustomOverrides });
+  }
   if (p.startsWith('/api/config/staff/') && method === 'PUT') {
     const id = Number(p.split('/').pop());
     const emp = s.users.find((u) => u.id === id);
@@ -1074,9 +1144,25 @@ export function handleStaticApi(method, rawPath, body = {}) {
       cur.revenue_cup = r2(cur.revenue_cup + it.line_total_cup);
       prodMap.set(it.product_id, cur);
     }));
+    const tCash = r2(ts.reduce((a, x) => a + (x.cash_amount_cup || 0), 0));
+    const tTm = r2(ts.reduce((a, x) => a + (x.transfermovil_amount_cup || 0), 0));
+    const tEz = r2(ts.reduce((a, x) => a + (x.enzona_amount_cup || 0), 0));
     return {
       today: t, period: per, config: s.config,
-      today_sales: { tickets: ts.length, total_cup: tSum, electronic_pct: tSum ? r2((tQr / tSum) * 100) : 0 },
+      today_sales: {
+        tickets: ts.length,
+        total_cup: tSum,
+        cash_cup: tCash,
+        transfermovil_cup: tTm,
+        enzona_cup: tEz,
+        electronic_cup: tQr,
+        electronic_pct: tSum ? r2((tQr / tSum) * 100) : 0,
+      },
+      closed_shifts_today: s.sessions.filter((x) => x.work_date === t && x.status !== 'ABIERTO').length,
+      recent_audit: s.audits.slice().reverse().slice(0, 10),
+      critical_products: s.products
+        .filter((x) => x.active !== 0 && (x.kiosk_stock <= x.kiosk_min_stock || x.warehouse_stock <= x.warehouse_min_stock))
+        .slice(0, 8),
       bank_balance_cup: acctBal(s, '110'),
       inventory: {
         total_products: s.products.length, warehouse_cost_cup: whC, kiosk_cost_cup: kC, total_cost_cup: r2(whC + kC),
@@ -1100,6 +1186,7 @@ export function handleStaticApi(method, rawPath, body = {}) {
           const pr = s.products.find((z) => z.id === m.product_id);
           return { ...m, product_name: pr?.name, unit: pr?.unit };
         }),
+        price_requests: (s.priceHistory || []).filter((x) => x.status === 'PENDIENTE_JEFE'),
         deposits: s.deposits.filter((d) => d.status === 'PENDIENTE'),
         restocks: s.restocks.filter((r) => r.status === 'PENDIENTE').map((r) => {
           const pr = s.products.find((z) => z.id === r.product_id);
@@ -1117,25 +1204,246 @@ export function handleStaticApi(method, rawPath, body = {}) {
   }
 
   // Warehouse
+  const wFlags = user.role === 'jefe'
+    ? { view_costs: true, view_entry_cost: true, edit_prices: true, upload_photos: true, publish_catalog: true, register_mermas: true }
+    : user.permissions_matrix?.flags || {};
+  const wPrivacy = {
+    canViewGlobalCosts: Boolean(wFlags.view_costs),
+    canViewEntryCost: Boolean(wFlags.view_costs || wFlags.view_entry_cost),
+    canEditPrices: Boolean(wFlags.edit_prices),
+    canUploadPhotos: Boolean(wFlags.upload_photos),
+    canPublishCatalog: Boolean(wFlags.publish_catalog),
+    canRegisterMermas: Boolean(wFlags.register_mermas),
+  };
+
   if (p === '/api/warehouse/products' && method === 'GET') {
     const t = todayIso();
     return {
       mfp_res_225_caps: MFP_CAPS,
+      privacy: wPrivacy,
+      catalog_settings: {
+        catalog_enabled: s.config.catalog_enabled !== 0,
+        catalog_show_out_of_stock: Boolean(s.config.catalog_show_out_of_stock ?? 1),
+        catalog_show_stock_qty: Boolean(s.config.catalog_show_stock_qty ?? 0),
+      },
+      fx_rates:
+        wPrivacy.canViewGlobalCosts && (s.config.show_fx_reference ?? 1)
+          ? { usd: s.config.rate_usd_cup || 320, mlc: s.config.rate_mlc_cup || 275, eur: s.config.rate_eur_cup || 340 }
+          : null,
       max_cash_provider_payment_cup: s.config.max_cash_provider_payment_cup,
-      products: s.products.map((pr) => {
+      products: s.products.filter((pr) => pr.active !== 0).map((pr) => {
         const diff = pr.next_expiry_date ? Math.round((new Date(pr.next_expiry_date) - new Date(t)) / 86400000) : 999;
-        return {
+        const sheet = calcCostSheet(pr, s.config);
+        const totalStock = r2((pr.warehouse_stock || 0) + (pr.kiosk_stock || 0));
+        const pendingPr = wPrivacy.canViewEntryCost
+          ? (s.priceHistory || []).slice().reverse().find((x) => x.product_id === pr.id && x.status === 'PENDIENTE_JEFE') || null
+          : null;
+        const base = {
           ...pr,
-          warehouse_value_cup: r2(pr.warehouse_stock * pr.unit_cost_cup),
-          kiosk_value_cup: r2(pr.kiosk_stock * pr.unit_cost_cup),
+          compatibility: pr.compatibility || '',
+          catalog_visible: pr.catalog_visible !== 0 ? 1 : 0,
+          catalog_featured: pr.catalog_featured ? 1 : 0,
+          total_stock: totalStock,
+          in_stock: totalStock > 0,
           low_kiosk: pr.kiosk_stock <= pr.kiosk_min_stock,
           low_warehouse: pr.warehouse_stock <= pr.warehouse_min_stock,
           expiry_status: diff < 0 ? 'VENCIDO' : diff <= 15 ? 'PROXIMO_VENCER' : 'VIGENTE',
           pending_restock: s.restocks.find((r) => r.product_id === pr.id && r.status === 'PENDIENTE') || null,
-          cost_sheet: calcCostSheet(pr, s.config),
+          pending_price_request: pendingPr,
+        };
+        if (wPrivacy.canViewGlobalCosts) {
+          return {
+            ...base,
+            warehouse_value_cup: r2(pr.warehouse_stock * pr.unit_cost_cup),
+            kiosk_value_cup: r2(pr.kiosk_stock * pr.unit_cost_cup),
+            cost_sheet: sheet,
+          };
+        }
+        if (wPrivacy.canViewEntryCost) {
+          return {
+            ...base,
+            indirect_cost_pct: null,
+            warehouse_value_cup: null,
+            kiosk_value_cup: null,
+            cost_sheet: {
+              suggested_price_cup: sheet.suggested_price_cup,
+              max_legal_price_cup: sheet.max_legal_price_cup,
+              is_compliant: sheet.is_compliant,
+              compliance_note: sheet.compliance_note,
+            },
+          };
+        }
+        return {
+          ...base,
+          unit_cost_cup: null,
+          indirect_cost_pct: null,
+          warehouse_value_cup: null,
+          kiosk_value_cup: null,
+          cost_sheet: null,
         };
       }),
     };
+  }
+  if (p === '/api/warehouse/products/create-with-entry' && method === 'POST') {
+    if (!body.name?.trim() || !body.category?.trim() || !body.unit?.trim()) {
+      err400('Indique nombre, categoría y unidad de medida.');
+    }
+    const sku = String(body.sku || `PRD-${String(s.seq.prod).padStart(4, '0')}`).trim().toUpperCase();
+    if (s.products.some((x) => String(x.sku).toUpperCase() === sku)) err400(`Ya existe el código SKU ${sku}.`);
+    const qty = Math.max(0, r2(body.quantity || 0));
+    const uc = Math.max(0, r2(body.unit_cost_cup || 0));
+    if (qty > 0 && uc <= 0) err400('Indique el costo unitario de entrada en CUP.');
+    const pm = String(body.payment_method || 'TRANSFERENCIA').toUpperCase();
+    const tc = r2(qty * uc);
+    if (qty > 0 && pm === 'EFECTIVO' && tc > s.config.max_cash_provider_payment_cup && s.config.strict_bancarizacion_block !== 0) {
+      err400(`Resolución 111/2023 BCC: Pagos mayores a ${s.config.max_cash_provider_payment_cup} CUP deben ser electrónicos.`);
+    }
+    const id = s.seq.prod++;
+    const draft = {
+      id, sku, name: String(body.name).trim(), category: String(body.category).trim(),
+      compatibility: String(body.compatibility || '').trim(),
+      unit: String(body.unit).trim(), unit_cost_cup: uc, indirect_cost_pct: s.config.indirect_cost_alloc_pct || 8,
+      sale_price_cup: 0, is_price_capped: body.is_price_capped ? 1 : 0,
+      price_cap_cup: body.is_price_capped ? r2(body.price_cap_cup) : null,
+      price_cap_resolution: body.is_price_capped ? body.price_cap_resolution || 'Res. 225/2024 MFP' : '',
+      is_margin_regulated: body.is_margin_regulated === false ? 0 : 1,
+      warehouse_stock: qty, kiosk_stock: 0,
+      warehouse_min_stock: Math.max(0, Number(body.warehouse_min_stock ?? 6)),
+      kiosk_min_stock: Math.max(0, Number(body.kiosk_min_stock ?? 3)),
+      kiosk_target_stock: Math.max(1, Number(body.kiosk_target_stock ?? 15)),
+      current_batch: String(body.batch_code || '').trim(),
+      next_expiry_date: String(body.expiry_date || '').trim(),
+      image_url: String(body.image_url || '').trim(),
+      catalog_description: String(body.catalog_description || '').trim(),
+      catalog_visible: body.catalog_visible === false ? 0 : 1,
+      catalog_featured: body.catalog_featured ? 1 : 0,
+      active: 1,
+    };
+    const sugg = uc > 0 ? calcCostSheet(draft, s.config).suggested_price_cup : 0;
+    const reqPrice = r2(body.sale_price_cup || 0);
+    let priceStatus = 'APPLIED';
+    if (reqPrice > 0) {
+      const check = calcCostSheet({ ...draft, sale_price_cup: reqPrice }, s.config);
+      if ((check.exceeds_cap || check.exceeds_margin) && s.config.strict_price_cap_block !== 0) {
+        err400(`Precio excede el tope o margen máximo legal (${check.max_legal_price_cup} CUP).`);
+      }
+      if (wPrivacy.canEditPrices || sugg <= 0) {
+        draft.sale_price_cup = reqPrice;
+      } else if (Math.abs(reqPrice - sugg) >= 0.01) {
+        draft.sale_price_cup = sugg;
+        priceStatus = 'PENDING_APPROVAL';
+        if (!Array.isArray(s.priceHistory)) s.priceHistory = [];
+        s.priceHistory.push({
+          id: s.priceHistory.length + 1, product_id: id, sku, product_name: draft.name, unit: draft.unit,
+          old_price_cup: sugg, new_price_cup: reqPrice, unit_cost_cup: uc, full_cost_cup: check.full_cost_cup,
+          margin_pct: check.margin_pct, reason: 'Precio público propuesto desde Almacén', status: 'PENDIENTE_JEFE',
+          created_by: user.id, created_by_name: user.full_name, created_by_role: user.role, created_at: nowIso(),
+        });
+      } else {
+        draft.sale_price_cup = sugg;
+      }
+    } else {
+      draft.sale_price_cup = sugg;
+    }
+    if (draft.sale_price_cup <= 0) err400('Indique precio público o costo unitario válido.');
+    s.products.push(draft);
+    const open = s.sessions.find((x) => x.status === 'ABIERTO');
+    if (open) {
+      s.ipvs.push({ id: s.seq.ipv++, shift_session_id: open.id, product_id: id, opening_qty: 0, entries_qty: 0, losses_qty: 0, sold_qty: 0, closing_qty: 0, sale_price_cup: draft.sale_price_cup, sold_amount_cup: 0 });
+    }
+    let recDoc = null;
+    let trDoc = null;
+    const dest = String(body.destination || 'ALMACEN').toUpperCase();
+    if (qty > 0) {
+      recDoc = `SC204-${String(s.movements.length + 1).padStart(4, '0')}`;
+      s.movements.push({
+        id: s.seq.mov++, doc_number: recDoc, type: 'RECEPCION', status: 'APLICADO', product_id: id,
+        quantity: qty, unit_cost_cup: uc, total_cost_cup: tc, warehouse_balance_after: qty, kiosk_balance_after: 0,
+        supplier_name: body.supplier_name || 'Proveedor directo', invoice_number: body.invoice_number || recDoc,
+        payment_method: pm, payment_ref: body.payment_ref || '', batch_code: draft.current_batch,
+        expiry_date: draft.next_expiry_date, created_by: user.id, created_at: nowIso(),
+      });
+      const cred = pm === 'EFECTIVO' ? NCIF.CAJA_GENERAL : pm === 'CREDITO' ? NCIF.PROVEEDORES : NCIF.BANCO_FISCAL;
+      addJournal(s, {
+        date: todayIso(), sourceType: 'RECEPCION', sourceRef: recDoc,
+        description: `Alta + Recepción ${recDoc}: ${qty} ${draft.unit} de ${draft.name}`, createdBy: user.id,
+        lines: [{ account: NCIF.INV_ALMACEN, debit: tc }, { account: cred, credit: tc }],
+      });
+      if (dest === 'KIOSKO' || dest === 'MIXTO') {
+        const toK = dest === 'KIOSKO' ? qty : Math.min(qty, Math.max(0, r2(body.kiosk_quantity ?? Math.ceil(qty / 2))));
+        if (toK > 0) {
+          const tr = execTransfer(s, { productId: id, quantity: toK, reason: `Pase inicial a POS (${recDoc})`, user });
+          trDoc = tr.doc_number;
+        }
+      }
+    }
+    if (priceStatus === 'APPLIED') {
+      if (!Array.isArray(s.priceHistory)) s.priceHistory = [];
+      const cs = calcCostSheet(draft, s.config);
+      s.priceHistory.push({
+        id: s.priceHistory.length + 1, product_id: id, sku, product_name: draft.name, unit: draft.unit,
+        old_price_cup: 0, new_price_cup: draft.sale_price_cup, unit_cost_cup: uc, full_cost_cup: cs.full_cost_cup,
+        margin_pct: cs.margin_pct, reason: 'Precio inicial en alta + entrada de almacén', status: 'APLICADO',
+        created_by: user.id, created_by_name: user.full_name, created_by_role: user.role, created_at: nowIso(),
+      });
+    }
+    addAudit(s, user, 'ALTA_CON_ENTRADA', 'Almacén y Catálogo', `Alta + Entrada ${sku} — ${draft.name} (${qty} ${draft.unit}, ${dest}).`);
+    return finish({
+      id, sku, name: draft.name, sale_price_cup: draft.sale_price_cup,
+      warehouse_stock: draft.warehouse_stock, kiosk_stock: draft.kiosk_stock,
+      catalog_visible: Boolean(draft.catalog_visible), has_photo: Boolean(draft.image_url),
+      doc_number: recDoc, transfer_doc: trDoc, price_status: priceStatus,
+    });
+  }
+  if (p.startsWith('/api/warehouse/products/') && p.endsWith('/ficha') && method === 'PUT') {
+    const id = Number(p.split('/')[4]);
+    const pr = s.products.find((x) => x.id === id);
+    if (!pr) err400('Producto no encontrado.', 404);
+    if (body.name !== undefined && String(body.name).trim()) pr.name = String(body.name).trim();
+    if (body.category !== undefined && String(body.category).trim()) pr.category = String(body.category).trim();
+    if (body.compatibility !== undefined) pr.compatibility = String(body.compatibility).trim();
+    if (body.unit !== undefined && String(body.unit).trim()) pr.unit = String(body.unit).trim();
+    if (body.image_url !== undefined) pr.image_url = String(body.image_url).trim();
+    if (body.catalog_description !== undefined) pr.catalog_description = String(body.catalog_description).trim();
+    if (body.catalog_visible !== undefined && wPrivacy.canPublishCatalog) pr.catalog_visible = body.catalog_visible ? 1 : 0;
+    if (body.catalog_featured !== undefined && wPrivacy.canPublishCatalog) pr.catalog_featured = body.catalog_featured ? 1 : 0;
+    if (body.warehouse_min_stock !== undefined) pr.warehouse_min_stock = Math.max(0, Number(body.warehouse_min_stock));
+    if (body.kiosk_min_stock !== undefined) pr.kiosk_min_stock = Math.max(0, Number(body.kiosk_min_stock));
+    if (body.current_batch !== undefined) pr.current_batch = String(body.current_batch).trim();
+    if (body.next_expiry_date !== undefined) pr.next_expiry_date = String(body.next_expiry_date).trim();
+    if (body.unit_cost_cup !== undefined && wPrivacy.canViewGlobalCosts && Number(body.unit_cost_cup) >= 0) {
+      pr.unit_cost_cup = r2(body.unit_cost_cup);
+    }
+    let priceStatus = 'UNCHANGED';
+    if (body.sale_price_cup !== undefined && r2(body.sale_price_cup) > 0 && Math.abs(r2(body.sale_price_cup) - pr.sale_price_cup) >= 0.01) {
+      const prop = r2(body.sale_price_cup);
+      const cs = calcCostSheet({ ...pr, sale_price_cup: prop }, s.config);
+      if ((cs.exceeds_cap || cs.exceeds_margin) && s.config.strict_price_cap_block !== 0) {
+        err400(`Precio excede el tope o margen legal (${cs.max_legal_price_cup} CUP).`);
+      }
+      if (!Array.isArray(s.priceHistory)) s.priceHistory = [];
+      if (wPrivacy.canEditPrices) {
+        const old = pr.sale_price_cup;
+        pr.sale_price_cup = prop;
+        priceStatus = 'APPLIED';
+        s.priceHistory.push({
+          id: s.priceHistory.length + 1, product_id: pr.id, sku: pr.sku, product_name: pr.name, unit: pr.unit,
+          old_price_cup: old, new_price_cup: prop, unit_cost_cup: pr.unit_cost_cup, full_cost_cup: cs.full_cost_cup,
+          margin_pct: cs.margin_pct, reason: body.price_reason || 'Actualización desde Ficha de Producto',
+          status: 'APLICADO', created_by: user.id, created_by_name: user.full_name, created_by_role: user.role, created_at: nowIso(),
+        });
+      } else {
+        priceStatus = 'PENDING_APPROVAL';
+        s.priceHistory.push({
+          id: s.priceHistory.length + 1, product_id: pr.id, sku: pr.sku, product_name: pr.name, unit: pr.unit,
+          old_price_cup: pr.sale_price_cup, new_price_cup: prop, unit_cost_cup: pr.unit_cost_cup, full_cost_cup: cs.full_cost_cup,
+          margin_pct: cs.margin_pct, reason: body.price_reason || 'Propuesta desde Almacén (pendiente Jefe)',
+          status: 'PENDIENTE_JEFE', created_by: user.id, created_by_name: user.full_name, created_by_role: user.role, created_at: nowIso(),
+        });
+      }
+    }
+    addAudit(s, user, 'FICHA_PRODUCTO', 'Almacén y Catálogo', `Actualizada ficha de ${pr.sku} — ${pr.name}.`);
+    return finish({ ok: true, id: pr.id, sale_price_cup: pr.sale_price_cup, catalog_visible: Boolean(pr.catalog_visible), price_status: priceStatus });
   }
   if (p === '/api/warehouse/products' && method === 'POST') {
     const draft = {
@@ -1185,8 +1493,18 @@ export function handleStaticApi(method, rawPath, body = {}) {
       description: `Recepción ${doc}: ${q} ${pr.unit} de ${pr.name}`, createdBy: user.id,
       lines: [{ account: NCIF.INV_ALMACEN, debit: tc }, { account: cred, credit: tc }],
     });
+    const dest = String(body.destination || 'ALMACEN').toUpperCase();
+    let trDoc = null;
+    if (dest === 'KIOSKO' || dest === 'MIXTO') {
+      const toK = dest === 'KIOSKO' ? q : Math.min(q, Math.max(0, r2(body.kiosk_quantity ?? Math.ceil(q / 2))));
+      if (toK > 0) trDoc = execTransfer(s, { productId: pr.id, quantity: toK, reason: `Pase directo POS (${doc})`, user }).doc_number;
+    }
+    if (body.catalog_visible !== undefined && wPrivacy.canPublishCatalog) {
+      pr.catalog_visible = body.catalog_visible ? 1 : 0;
+    }
     triggerRestock(s, pr.id);
-    return finish({ doc_number: doc, new_weighted_cost_cup: pr.unit_cost_cup, journal_entry: je });
+    addAudit(s, user, 'RECEPCION_SC204', 'Almacén y Stock', `${doc}: ${q} ${pr.unit} de ${pr.name} (${pm}, ${dest}).`);
+    return finish({ doc_number: doc, transfer_doc: trDoc, new_weighted_cost_cup: pr.unit_cost_cup, new_warehouse_stock: pr.warehouse_stock, new_kiosk_stock: pr.kiosk_stock, journal_entry: je });
   }
   if (p === '/api/warehouse/transfers' && method === 'POST') {
     return finish(execTransfer(s, { productId: body.product_id, quantity: body.quantity, reason: body.reason, user }));
@@ -1240,9 +1558,20 @@ export function handleStaticApi(method, rawPath, body = {}) {
     }
     const pr = s.products.find((z) => z.id === m.product_id);
     const fromK = m.reason.startsWith('[KIOSKO]');
-    if (fromK) pr.kiosk_stock = r2(pr.kiosk_stock - m.quantity);
-    else pr.warehouse_stock = r2(pr.warehouse_stock - m.quantity);
+    if (fromK) {
+      pr.kiosk_stock = Math.max(0, r2(pr.kiosk_stock - m.quantity));
+      const openS = s.sessions.find((x) => x.status === 'ABIERTO');
+      const ipvRow = openS ? s.ipvs.find((i) => i.shift_session_id === openS.id && i.product_id === pr.id) : null;
+      if (ipvRow) {
+        ipvRow.losses_qty = r2((ipvRow.losses_qty || 0) + m.quantity);
+        ipvRow.closing_qty = Math.max(0, r2(ipvRow.closing_qty - m.quantity));
+      }
+    } else {
+      pr.warehouse_stock = Math.max(0, r2(pr.warehouse_stock - m.quantity));
+    }
     m.status = 'APLICADO';
+    m.approved_by = user.id;
+    addAudit(s, user, 'APROBACION_MERMA', 'Almacén y Stock', `Aprobada merma ${m.doc_number}: ${m.quantity} ${pr.unit} de ${pr.name}.`);
     const je = addJournal(s, {
       date: todayIso(), sourceType: 'MERMA', sourceRef: m.doc_number,
       description: `Baja por Merma ${m.doc_number} (${pr.name})`, createdBy: user.id,
@@ -1260,7 +1589,11 @@ export function handleStaticApi(method, rawPath, body = {}) {
         .map((m) => {
           const pr = s.products.find((z) => z.id === m.product_id);
           const u = s.users.find((z) => z.id === m.created_by);
-          return { ...m, product_name: pr?.name, unit: pr?.unit, created_by_name: u?.full_name };
+          const row = { ...m, sku: pr?.sku, product_name: pr?.name, unit: pr?.unit, created_by_name: u?.full_name };
+          if (!wPrivacy.canViewEntryCost) {
+            return { ...row, unit_cost_cup: null, total_cost_cup: null, supplier_name: '', invoice_number: '' };
+          }
+          return row;
         }),
     };
   }
@@ -1300,6 +1633,30 @@ export function handleStaticApi(method, rawPath, body = {}) {
     return finish(sessionBundle(s, open.id));
   }
   if (p === '/api/pos/sales' && method === 'POST') return finish(execSale(s, body, user));
+  if (p.includes('/api/pos/registers/') && p.endsWith('/cash-movement') && method === 'POST') {
+    const id = Number(p.split('/')[4]);
+    const reg = s.registers.find((r) => r.id === id);
+    if (!reg || reg.status !== 'ABIERTA') err400('Caja no encontrada o cerrada.');
+    const type = String(body.type || '').toUpperCase();
+    const amount = r2(body.amount_cup);
+    const reason = String(body.reason || '').trim();
+    if (!['ENTRADA', 'SALIDA'].includes(type)) err400('Seleccione ENTRADA o SALIDA.');
+    if (!amount || amount <= 0) err400('Indique un importe mayor que cero.');
+    if (reason.length < 4) err400('Indique el motivo de la entrada o salida de caja.');
+    if (type === 'SALIDA' && amount > reg.expected_cash_cup + 0.01) {
+      err400(`Efectivo insuficiente en Caja #${reg.register_number}.`);
+    }
+    reg.expected_cash_cup = r2(reg.expected_cash_cup + (type === 'ENTRADA' ? amount : -amount));
+    if (!Array.isArray(s.cash_movements)) s.cash_movements = [];
+    const mid = s.cash_movements.length + 1;
+    s.cash_movements.push({
+      id: mid, shift_session_id: reg.shift_session_id, shift_register_id: reg.id,
+      register_number: reg.register_number, type, amount_cup: amount, reason,
+      created_by: user.id, created_by_name: user.full_name, created_at: nowIso(),
+    });
+    addAudit(s, user, type === 'ENTRADA' ? 'ENTRADA_CAJA' : 'SALIDA_CAJA', 'Turnos, Cajas e IPV', `${type} ${amount.toFixed(2)} CUP en Caja #${reg.register_number}: ${reason}.`);
+    return finish({ id: mid, type, amount_cup: amount, expected_cash_cup: reg.expected_cash_cup, active: sessionBundle(s, reg.shift_session_id) });
+  }
   if (p.includes('/api/pos/registers/') && p.endsWith('/close') && method === 'POST') {
     const id = Number(p.split('/')[4]);
     const reg = s.registers.find((r) => r.id === id);
@@ -1337,16 +1694,80 @@ export function handleStaticApi(method, rawPath, body = {}) {
 
   // Finance
   if (p === '/api/finance/cost-sheets') {
-    return { business: s.config, mfp_res_225_caps: MFP_CAPS, items: s.products.map((pr) => ({ ...pr, cost_sheet: calcCostSheet(pr, s.config) })), history: s.priceHistory };
+    const canViewCosts = user.role === 'jefe' || Boolean(user.permissions_matrix?.flags?.view_costs);
+    return {
+      can_view_costs: canViewCosts,
+      company_code: s.config.company_code || 'kiosko-CEIBA1',
+      business: {
+        ...s.config,
+        catalog_enabled: s.config.catalog_enabled !== 0,
+        catalog_show_out_of_stock: Boolean(s.config.catalog_show_out_of_stock ?? 1),
+        show_fx_reference: Boolean(s.config.show_fx_reference ?? 1),
+        rate_usd_cup: s.config.rate_usd_cup || 320,
+        rate_mlc_cup: s.config.rate_mlc_cup || 275,
+        rate_eur_cup: s.config.rate_eur_cup || 340,
+      },
+      mfp_res_225_caps: MFP_CAPS,
+      items: s.products.filter((pr) => pr.active !== 0).map((pr) => {
+        const cs = calcCostSheet(pr, s.config);
+        if (!canViewCosts) {
+          return {
+            id: pr.id, sku: pr.sku, name: pr.name, category: pr.category, compatibility: pr.compatibility || '',
+            unit: pr.unit, sale_price_cup: pr.sale_price_cup, is_price_capped: pr.is_price_capped,
+            price_cap_cup: pr.price_cap_cup, price_cap_resolution: pr.price_cap_resolution,
+            warehouse_stock: pr.warehouse_stock, kiosk_stock: pr.kiosk_stock,
+            image_url: pr.image_url || '', catalog_visible: pr.catalog_visible !== 0,
+            catalog_featured: Boolean(pr.catalog_featured), catalog_description: pr.catalog_description || '',
+            unit_cost_cup: null, indirect_cost_pct: null,
+            cost_sheet: { is_compliant: cs.is_compliant, max_legal_price_cup: cs.max_legal_price_cup, compliance_note: cs.compliance_note },
+          };
+        }
+        return { ...pr, compatibility: pr.compatibility || '', catalog_visible: pr.catalog_visible !== 0, catalog_featured: Boolean(pr.catalog_featured), cost_sheet: cs };
+      }),
+      history: canViewCosts ? (s.priceHistory || []).slice().reverse() : [],
+    };
+  }
+  if (p.startsWith('/api/finance/price-requests/') && p.endsWith('/decide') && method === 'POST') {
+    const id = Number(p.split('/')[4]);
+    const prReq = (s.priceHistory || []).find((x) => x.id === id);
+    if (!prReq) err400('Solicitud no encontrada.', 404);
+    if (body.decision === 'RECHAZAR') {
+      prReq.status = 'RECHAZADO';
+      prReq.approved_by_name = user.full_name;
+      addAudit(s, user, 'RECHAZO_PRECIO', 'Precios y Tablilla', `Rechazada propuesta ${prReq.new_price_cup} CUP (${prReq.product_name}).`);
+      return finish({ status: 'RECHAZADO' });
+    }
+    const pr = s.products.find((x) => x.id === prReq.product_id);
+    if (pr) {
+      prReq.old_price_cup = pr.sale_price_cup;
+      pr.sale_price_cup = prReq.new_price_cup;
+    }
+    prReq.status = 'APLICADO';
+    prReq.approved_by_name = user.full_name;
+    addAudit(s, user, 'APROBACION_PRECIO', 'Precios y Tablilla', `Aprobado precio ${prReq.new_price_cup} CUP (${prReq.product_name}).`);
+    return finish({ status: 'APLICADO', sale_price_cup: prReq.new_price_cup });
   }
   if (p.includes('/api/finance/products/') && method === 'POST') {
+    if (user.role !== 'jefe' && !user.permissions_matrix?.flags?.edit_prices) {
+      err400('Solo el Jefe o usuarios autorizados pueden modificar precios finales.', 403);
+    }
     const id = Number(p.split('/')[4]);
     const pr = s.products.find((z) => z.id === id);
+    const oldP = pr.sale_price_cup;
     const cand = { ...pr, ...body, sale_price_cup: r2(body.sale_price_cup), is_price_capped: body.is_price_capped ? 1 : 0, is_margin_regulated: body.is_margin_regulated ? 1 : 0 };
     const cs = calcCostSheet(cand, s.config);
     if (cs.exceeds_cap && s.config.strict_price_cap_block) err400(`Bloqueado por Res. 225/2024 MFP: supera tope de ${cs.price_cap_cup} CUP.`);
     if (cs.exceeds_margin && s.config.strict_price_cap_block) err400(`Bloqueado MFP: margen ${cs.margin_pct}% supera el máximo de ${cs.max_margin_pct}%.`);
     Object.assign(pr, cand);
+    if (!Array.isArray(s.priceHistory)) s.priceHistory = [];
+    s.priceHistory.push({
+      id: s.priceHistory.length + 1, product_id: pr.id, sku: pr.sku, product_name: pr.name, unit: pr.unit,
+      old_price_cup: oldP, new_price_cup: pr.sale_price_cup, unit_cost_cup: pr.unit_cost_cup, full_cost_cup: cs.full_cost_cup,
+      margin_pct: cs.margin_pct, reason: body.reason || 'Actualización en Precios y Tablilla',
+      status: 'APLICADO', created_by: user.id, created_by_name: user.full_name, created_by_role: user.role,
+      approved_by_name: user.full_name, created_at: nowIso(),
+    });
+    addAudit(s, user, 'CAMBIO_PRECIO', 'Precios y Tablilla', `${pr.sku} — ${pr.name}: ${oldP} → ${pr.sale_price_cup} CUP.`);
     return finish({ ok: true, sale_price_cup: pr.sale_price_cup, cost_sheet: cs });
   }
   if (p === '/api/finance/auto-optimize-prices' && method === 'POST') return finish({ adjusted_count: 0, adjusted: [] });
