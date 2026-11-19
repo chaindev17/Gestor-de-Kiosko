@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDb, nextDocCode, roundCup, runInTransaction } from '../db.js';
-import { logAudit, logAutomation, requireAuth, requireRole } from '../auth.js';
+import { logAudit, logAutomation, requireAuth, requirePermission, requireRole } from '../auth.js';
 import {
   MFP_RES_225_CAPS,
   NCIF_ACCOUNTS,
@@ -22,37 +22,89 @@ const router = Router();
 /**
  * MFP Cost Sheets & Official Retail Price Board (Tablilla Oficial de Precios en CUP)
  */
-router.get('/cost-sheets', requireAuth, (_req, res) => {
+router.get('/cost-sheets', requireAuth, requirePermission('pricing', 'canView'), (req, res) => {
   const db = getDb();
   const config = getConfig(db);
+  const canViewCosts =
+    req.user.role === 'jefe' || Boolean(req.user.permissions_matrix?.flags?.view_costs);
   const products = db.prepare(`SELECT * FROM products WHERE active = 1 ORDER BY category, name`).all();
-  const items = products.map((p) => ({
-    ...p,
-    cost_sheet: calculateCostSheet(p, config),
-  }));
-  const history = db
-    .prepare(
-      `SELECT pcr.*, p.sku, p.name AS product_name, p.unit, u.full_name AS created_by_name
-       FROM price_change_requests pcr
-       JOIN products p ON p.id = pcr.product_id
-       LEFT JOIN users u ON u.id = pcr.created_by
-       ORDER BY pcr.id DESC LIMIT 25`
-    )
-    .all();
+  const items = products.map((p) => {
+    const sheet = calculateCostSheet(p, config);
+    if (!canViewCosts) {
+      // Vista pública/tablilla sin costos ni márgenes privados
+      return {
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        category: p.category,
+        compatibility: p.compatibility || '',
+        unit: p.unit,
+        sale_price_cup: p.sale_price_cup,
+        is_price_capped: p.is_price_capped,
+        price_cap_cup: p.price_cap_cup,
+        price_cap_resolution: p.price_cap_resolution,
+        warehouse_stock: p.warehouse_stock,
+        kiosk_stock: p.kiosk_stock,
+        image_url: p.image_url || '',
+        catalog_visible: Boolean(p.catalog_visible),
+        catalog_featured: Boolean(p.catalog_featured),
+        catalog_description: p.catalog_description || '',
+        unit_cost_cup: null,
+        indirect_cost_pct: null,
+        cost_sheet: {
+          is_compliant: sheet.is_compliant,
+          max_legal_price_cup: sheet.max_legal_price_cup,
+          compliance_note: sheet.compliance_note,
+        },
+      };
+    }
+    return {
+      ...p,
+      compatibility: p.compatibility || '',
+      catalog_visible: Boolean(p.catalog_visible),
+      catalog_featured: Boolean(p.catalog_featured),
+      cost_sheet: sheet,
+    };
+  });
+
+  const history = canViewCosts
+    ? db
+        .prepare(
+          `SELECT pcr.*, p.sku, p.name AS product_name, p.unit,
+                  u.full_name AS created_by_name, u.role AS created_by_role,
+                  ua.full_name AS approved_by_name
+           FROM price_change_requests pcr
+           JOIN products p ON p.id = pcr.product_id
+           LEFT JOIN users u ON u.id = pcr.created_by
+           LEFT JOIN users ua ON ua.id = pcr.approved_by
+           ORDER BY pcr.id DESC LIMIT 40`
+        )
+        .all()
+    : [];
 
   res.json({
+    can_view_costs: canViewCosts,
+    company_code: req.company?.company_code || config.company_code,
     business: {
+      company_code: req.company?.company_code || config.company_code,
       business_name: config.business_name,
       legal_form: config.legal_form,
       nit: config.nit,
       municipality: config.municipality,
       province: config.province,
       address: config.address,
+      whatsapp_phone: config.whatsapp_phone || config.transfermovil_phone || '',
+      catalog_enabled: Boolean(config.catalog_enabled),
+      catalog_show_out_of_stock: Boolean(config.catalog_show_out_of_stock),
       transfermovil_merchant_code: config.transfermovil_merchant_code,
       enzona_merchant_code: config.enzona_merchant_code,
       qr_discount_pct: config.qr_discount_pct,
       max_regulated_margin_pct: config.max_regulated_margin_pct,
       indirect_cost_alloc_pct: config.indirect_cost_alloc_pct,
+      show_fx_reference: Boolean(config.show_fx_reference),
+      rate_usd_cup: config.rate_usd_cup || 320,
+      rate_mlc_cup: config.rate_mlc_cup || 275,
+      rate_eur_cup: config.rate_eur_cup || 340,
     },
     mfp_res_225_caps: MFP_RES_225_CAPS,
     items,
@@ -60,7 +112,79 @@ router.get('/cost-sheets', requireAuth, (_req, res) => {
   });
 });
 
-router.post('/products/:id/price', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/price-requests/:id/decide', requireAuth, requirePermission('pricing', 'canApprove'), (req, res) => {
+  const db = getDb();
+  const config = getConfig(db);
+  const id = Number(req.params.id);
+  const rawDecision = String(req.body?.decision || '').toUpperCase();
+  const decision =
+    rawDecision === 'APROBADO' ? 'APROBAR' : rawDecision === 'RECHAZADO' ? 'RECHAZAR' : rawDecision;
+  if (!['APROBAR', 'RECHAZAR'].includes(decision)) {
+    return res.status(400).json({ error: 'Indique decisión: APROBAR o RECHAZAR.' });
+  }
+  const reqRow = db
+    .prepare(
+      `SELECT pcr.*, p.sku, p.name AS product_name, p.sale_price_cup AS current_price
+       FROM price_change_requests pcr
+       JOIN products p ON p.id = pcr.product_id
+       WHERE pcr.id = ?`
+    )
+    .get(id);
+  if (!reqRow) return res.status(404).json({ error: 'Solicitud de precio no encontrada.' });
+  if (reqRow.status !== 'PENDIENTE_JEFE') {
+    return res.status(400).json({ error: 'Esta solicitud ya fue procesada.' });
+  }
+
+  if (decision === 'RECHAZAR') {
+    db.prepare(
+      `UPDATE price_change_requests SET status = 'RECHAZADO', approved_by = ? WHERE id = ?`
+    ).run(req.user.id, id);
+    logAudit(
+      db,
+      req.user,
+      'RECHAZO_PRECIO',
+      'Precios y Tablilla',
+      `Rechazada propuesta de precio ${reqRow.new_price_cup.toFixed(2)} CUP para ${reqRow.sku} — ${reqRow.product_name}.`
+    );
+    return res.json({ status: 'RECHAZADO' });
+  }
+
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(reqRow.product_id);
+  const check = validateProposedPrice(product, reqRow.new_price_cup, config);
+  if (!check.valid) return res.status(400).json({ error: check.message });
+
+  runInTransaction(db, () => {
+    db.prepare(`UPDATE products SET sale_price_cup = ?, updated_at = datetime('now') WHERE id = ?`).run(
+      reqRow.new_price_cup,
+      reqRow.product_id
+    );
+    db.prepare(
+      `UPDATE price_change_requests SET status = 'APLICADO', old_price_cup = ?, approved_by = ? WHERE id = ?`
+    ).run(product.sale_price_cup, req.user.id, id);
+    const openShift = db.prepare(`SELECT id FROM shift_sessions WHERE status = 'ABIERTO' LIMIT 1`).get();
+    if (openShift) {
+      db.prepare(
+        `UPDATE shift_ipv_snapshots SET sale_price_cup = ? WHERE shift_session_id = ? AND product_id = ?`
+      ).run(reqRow.new_price_cup, openShift.id, reqRow.product_id);
+    }
+    logAudit(
+      db,
+      req.user,
+      'APROBACION_PRECIO',
+      'Precios y Tablilla',
+      `Aprobado nuevo precio de ${reqRow.sku} — ${reqRow.product_name}: ${product.sale_price_cup.toFixed(2)} → ${reqRow.new_price_cup.toFixed(2)} CUP.`
+    );
+  });
+
+  res.json({ status: 'APLICADO', sale_price_cup: reqRow.new_price_cup });
+});
+
+router.post('/products/:id/price', requireAuth, (req, res) => {
+  if (req.user.role !== 'jefe' && !req.user.permissions_matrix?.flags?.edit_prices) {
+    return res.status(403).json({
+      error: 'Solo el Jefe o usuarios autorizados pueden modificar precios finales de venta.',
+    });
+  }
   const db = getDb();
   const config = getConfig(db);
   if (req.user.role === 'economico' && config.permissions?.economico_edit_prices_directly === false) {
@@ -157,7 +281,7 @@ router.post('/products/:id/price', requireAuth, requireRole('economico', 'jefe')
   res.json({ ok: true, sale_price_cup: newPrice, cost_sheet: check.sheet, warning: check.warning });
 });
 
-router.post('/auto-optimize-prices', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/auto-optimize-prices', requireAuth, requirePermission('pricing', 'canEdit'), (req, res) => {
   const db = getDb();
   const config = getConfig(db);
   const products = db.prepare(`SELECT * FROM products WHERE active = 1 AND unit_cost_cup > 0`).all();
@@ -218,7 +342,7 @@ router.post('/auto-optimize-prices', requireAuth, requireRole('economico', 'jefe
 /**
  * ONAT Tax Summary & Payment Recording
  */
-router.get('/onat', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.get('/onat', requireAuth, requirePermission('onat', 'canView'), (req, res) => {
   const db = getDb();
   const period = String(req.query.period || getCurrentPeriod()).slice(0, 7);
   const summary = calculateOnatSummary(db, period);
@@ -251,7 +375,7 @@ router.get('/onat', requireAuth, requireRole('economico', 'jefe'), (req, res) =>
   });
 });
 
-router.post('/onat/pay', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/onat/pay', requireAuth, requirePermission('onat', 'canEdit'), (req, res) => {
   const db = getDb();
   const { period, tax_code, payment_ref } = req.body || {};
   const targetPeriod = String(period || getCurrentPeriod()).slice(0, 7);
@@ -348,7 +472,7 @@ router.post('/onat/pay', requireAuth, requireRole('economico', 'jefe'), (req, re
 /**
  * Banking, Bancarización Res. 111/2023 BCC, QR Reconciliation & Operating Expenses
  */
-router.get('/banking', requireAuth, requireRole('economico', 'jefe'), (_req, res) => {
+router.get('/banking', requireAuth, requirePermission('banking', 'canView'), (_req, res) => {
   const db = getDb();
   const config = getConfig(db);
 
@@ -418,7 +542,7 @@ router.get('/banking', requireAuth, requireRole('economico', 'jefe'), (_req, res
   });
 });
 
-router.post('/deposits/:id/complete', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/deposits/:id/complete', requireAuth, requirePermission('banking', 'canEdit'), (req, res) => {
   const db = getDb();
   const id = Number(req.params.id);
   const ref = String(req.body?.bank_voucher_ref || '').trim();
@@ -463,7 +587,7 @@ router.post('/deposits/:id/complete', requireAuth, requireRole('economico', 'jef
   res.json({ ok: true, ...out });
 });
 
-router.post('/deposits', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/deposits', requireAuth, requirePermission('banking', 'canEdit'), (req, res) => {
   const db = getDb();
   const amount = roundCup(req.body?.amount_cup);
   const voucher = String(req.body?.bank_voucher_ref || '').trim();
@@ -517,7 +641,7 @@ router.post('/deposits', requireAuth, requireRole('economico', 'jefe'), (req, re
   res.status(201).json({ order_number: orderNum });
 });
 
-router.post('/reconcile-qr', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/reconcile-qr', requireAuth, requirePermission('banking', 'canEdit'), (req, res) => {
   const db = getDb();
   const pending = db
     .prepare(
@@ -566,7 +690,7 @@ router.post('/reconcile-qr', requireAuth, requireRole('economico', 'jefe'), (req
   res.json(out);
 });
 
-router.post('/expenses', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/expenses', requireAuth, requirePermission('banking', 'canEdit'), (req, res) => {
   const db = getDb();
   const config = getConfig(db);
   const b = req.body || {};
@@ -646,7 +770,7 @@ router.post('/expenses', requireAuth, requireRole('economico', 'jefe'), (req, re
 /**
  * Automated Cuban Payroll (Ley 116 + Ley 113 progressive IIP + SS + IUFT + 9.09% Vacation)
  */
-router.get('/payroll', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.get('/payroll', requireAuth, requirePermission('payroll', 'canView'), (req, res) => {
   const db = getDb();
   const period = String(req.query.period || getCurrentPeriod()).slice(0, 7);
   const preview = calculatePayrollPreview(db, period);
@@ -675,7 +799,7 @@ router.get('/payroll', requireAuth, requireRole('economico', 'jefe'), (req, res)
   });
 });
 
-router.post('/payroll/generate', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/payroll/generate', requireAuth, requirePermission('payroll', 'canEdit'), (req, res) => {
   const db = getDb();
   const period = String(req.body?.period || getCurrentPeriod()).slice(0, 7);
   const payNow = Boolean(req.body?.pay_now);
@@ -806,7 +930,7 @@ router.post('/payroll/generate', requireAuth, requireRole('economico', 'jefe'), 
   res.status(201).json(out);
 });
 
-router.post('/payroll/:id/pay', requireAuth, requireRole('economico', 'jefe'), (req, res) => {
+router.post('/payroll/:id/pay', requireAuth, requirePermission('payroll', 'canEdit'), (req, res) => {
   const db = getDb();
   const id = Number(req.params.id);
   const paymentRef = String(req.body?.payment_ref || '').trim();
@@ -861,7 +985,7 @@ router.post('/payroll/:id/pay', requireAuth, requireRole('economico', 'jefe'), (
 /**
  * Automated NCIF Accounting: General Journal, Trial Balance & Income Statement
  */
-router.get('/accounting', requireAuth, requireRole('economico', 'jefe'), (_req, res) => {
+router.get('/accounting', requireAuth, requirePermission('accounting', 'canView'), (_req, res) => {
   const db = getDb();
   const period = getCurrentPeriod();
 
@@ -921,7 +1045,7 @@ router.get('/accounting', requireAuth, requireRole('economico', 'jefe'), (_req, 
 /**
  * Virtual Inspector & Ready-to-Print Inspection Dossier (DIS / ONAT / BCC / MFP / MTSS)
  */
-router.get('/compliance', requireAuth, requireRole('jefe', 'economico', 'almacenero'), (_req, res) => {
+router.get('/compliance', requireAuth, requirePermission('compliance', 'canView'), (_req, res) => {
   const db = getDb();
   const config = getConfig(db);
   const audit = runComplianceAudit(db);

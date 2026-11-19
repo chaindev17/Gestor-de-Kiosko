@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 import { api, setSessionToken } from './lib/api.js';
+import { MENU_SCHEMA, canUserAccess } from './lib/permissions.js';
 import { decodeCatalogSnapshot } from './lib/whatsapp.js';
 import ConectaLanding from './components/ConectaLanding.jsx';
 import AuthFlow from './components/AuthFlow.jsx';
 import AccountHub from './components/AccountHub.jsx';
 import CreateCompanyWizard from './components/CreateCompanyWizard.jsx';
 import PublicCatalog from './components/PublicCatalog.jsx';
-import Layout, { getDefaultPageForRole, getNavForRole } from './components/Layout.jsx';
+import Layout, { getDefaultPageForRole, getNavForUser } from './components/Layout.jsx';
 import WorkspaceSettingsPage from './pages/WorkspaceSettingsPage.jsx';
 import CatalogWhatsappPage from './pages/CatalogWhatsappPage.jsx';
 import JefeDashboard from './pages/JefeDashboard.jsx';
@@ -71,11 +72,20 @@ export default function App() {
     setConfig(payload.config || null);
     setBadges(payload.badges || {});
 
-    if (nextView) {
+    if (nextView && nextView !== 'workspace') {
       setView(nextView);
     } else if (payload.user) {
-      setActivePage(getDefaultPageForRole(payload.user.role, payload.badges || {}, payload.config));
+      const hashMatch = window.location.hash.match(/^#\/(?:modulo|app)\/([a-z0-9-]+)$/i);
+      const requested = hashMatch ? hashMatch[1].toLowerCase() : null;
+      const defaultPage = getDefaultPageForRole(payload.user, payload.badges || {}, payload.config);
+      if (requested && canUserAccess(payload.user, payload.config, requested, 'canView')) {
+        setActivePage(requested);
+      } else {
+        setActivePage(defaultPage);
+      }
       setView('workspace');
+    } else if (nextView) {
+      setView(nextView);
     } else if (payload.account) {
       setView('hub');
     } else {
@@ -89,6 +99,7 @@ export default function App() {
       if (res.account !== undefined) setAccount(res.account);
       if (res.memberships !== undefined) setMemberships(res.memberships || []);
       if (res.active_company !== undefined) setActiveCompany(res.active_company);
+      if (res.user) setUser(res.user);
       if (res.config) setConfig(res.config);
       setBadges(res.badges || {});
     } catch {
@@ -146,14 +157,57 @@ export default function App() {
       .finally(() => setBooting(false));
   }, [applyPayload]);
 
-  // Keep activePage valid when creator toggles modules or changes role view
+  // Navegación protegida por permisos granulares (bloquea menú y URL directa #/modulo/...)
+  const navigateProtected = useCallback(
+    (pageId, opts = {}) => {
+      if (!user) return;
+      if (canUserAccess(user, config, pageId, 'canView')) {
+        if (pageId === 'catalog-wa' && opts.catalogTab) {
+          setCatalogInitialTab(opts.catalogTab);
+        }
+        setActivePage(pageId);
+        const targetHash = `#/modulo/${pageId}`;
+        if (window.location.hash !== targetHash) {
+          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${targetHash}`);
+        }
+      } else {
+        const modLabel = MENU_SCHEMA.find((m) => m.id === pageId)?.label || pageId;
+        const fallback = getDefaultPageForRole(user, badges, config);
+        setActivePage(fallback);
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/modulo/${fallback}`);
+        notify(`Acceso restringido: tu perfil no tiene permiso para entrar a «${modLabel}».`, 'error');
+      }
+    },
+    [user, config, badges, notify]
+  );
+
+  // Guardián de permisos ante cambios de rol/permisos y escritura directa de URL (#/modulo/...)
   useEffect(() => {
     if (view !== 'workspace' || !user) return;
-    const allowed = getNavForRole(user.role, badges, config).map((n) => n.id);
+    const allowed = getNavForUser(user, badges, config).map((n) => n.id);
     if (!allowed.includes(activePage)) {
-      setActivePage(getDefaultPageForRole(user.role, badges, config));
+      const fallback = getDefaultPageForRole(user, badges, config);
+      setActivePage(fallback);
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/modulo/${fallback}`);
+    } else {
+      const targetHash = `#/modulo/${activePage}`;
+      if (window.location.hash !== targetHash) {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${targetHash}`);
+      }
     }
   }, [view, user, activePage, badges, config]);
+
+  useEffect(() => {
+    if (view !== 'workspace' || !user) return undefined;
+    const onHashChange = () => {
+      const match = window.location.hash.match(/^#\/(?:modulo|app)\/([a-z0-9-]+)$/i);
+      if (!match) return;
+      const requested = match[1].toLowerCase();
+      navigateProtected(requested);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [view, user, navigateProtected]);
 
   function openCatalogPreview(code, fromView = view, isOwner = false) {
     setCatalogState({
@@ -167,8 +221,7 @@ export default function App() {
   }
 
   function openCatalogTab(tabName) {
-    setCatalogInitialTab(tabName || 'orders');
-    setActivePage('catalog-wa');
+    navigateProtected('catalog-wa', { catalogTab: tabName || 'orders' });
   }
 
   async function handleTryDemo() {
@@ -379,27 +432,39 @@ export default function App() {
           badges={badges}
           activePage={activePage}
           onNavigate={(pageId) => {
-            if (pageId === 'catalog-wa') setCatalogInitialTab('orders');
-            setActivePage(pageId);
+            navigateProtected(pageId, pageId === 'catalog-wa' ? { catalogTab: 'orders' } : {});
           }}
           onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
           onSwitchUser={handleSwitchUser}
           onOpenHub={account ? handleOpenHub : null}
+          onStartAffiliate={(mode) => {
+            setAuthOpts((o) => ({
+              ...o,
+              mode: mode === 'affiliate' ? 'affiliate' : 'register',
+              intent: mode === 'affiliate' ? 'affiliate' : 'create',
+              code: '',
+            }));
+            setView('auth');
+          }}
           onLogout={handleLogout}
           notify={notify}
         >
-          {activePage === 'workspace-settings' && (
-            <WorkspaceSettingsPage
-              config={config}
-              activeCompany={activeCompany}
-              onGovernanceUpdated={handleGovernanceUpdated}
-              onRefreshBadges={refreshBadges}
-              notify={notify}
-            />
-          )}
-          {activePage === 'catalog-wa' && (
+          {activePage === 'workspace-settings' &&
+            canUserAccess(user, config, 'workspace-settings', 'canView') && (
+              <WorkspaceSettingsPage
+                config={config}
+                activeCompany={activeCompany}
+                onGovernanceUpdated={handleGovernanceUpdated}
+                onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
+                onRefreshBadges={refreshBadges}
+                notify={notify}
+              />
+            )}
+          {activePage === 'catalog-wa' && canUserAccess(user, config, 'catalog-wa', 'canView') && (
             <CatalogWhatsappPage
               user={user}
+              config={config}
+              activeCompany={activeCompany}
               initialTab={catalogInitialTab}
               onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
               onRefreshBadges={refreshBadges}
@@ -407,49 +472,82 @@ export default function App() {
               notify={notify}
             />
           )}
-          {activePage === 'jefe-home' && (
+          {activePage === 'jefe-home' && canUserAccess(user, config, 'jefe-home', 'canView') && (
             <JefeDashboard
-              onNavigate={setActivePage}
+              user={user}
+              config={config}
+              activeCompany={activeCompany}
+              onNavigate={navigateProtected}
               onOpenCatalogTab={openCatalogTab}
               onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
               onRefreshBadges={refreshBadges}
               notify={notify}
             />
           )}
-          {activePage === 'staff' && (
-            <StaffShiftsPage user={user} onRefreshBadges={refreshBadges} notify={notify} />
-          )}
-          {activePage === 'pos' && (
-            <PosPage
+          {activePage === 'staff' && canUserAccess(user, config, 'staff', 'canView') && (
+            <StaffShiftsPage
               user={user}
-              badges={badges}
-              onNavigate={setActivePage}
+              config={config}
               onRefreshBadges={refreshBadges}
               notify={notify}
             />
           )}
-          {activePage === 'shift-ipv' && (
-            <ShiftIpvPage user={user} onRefreshBadges={refreshBadges} notify={notify} />
+          {activePage === 'pos' && canUserAccess(user, config, 'pos', 'canView') && (
+            <PosPage
+              user={user}
+              config={config}
+              activeCompany={activeCompany}
+              badges={badges}
+              onNavigate={navigateProtected}
+              onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
+              onRefreshBadges={refreshBadges}
+              notify={notify}
+            />
           )}
-          {activePage === 'warehouse' && (
-            <WarehousePage user={user} onRefreshBadges={refreshBadges} notify={notify} />
+          {activePage === 'shift-ipv' && canUserAccess(user, config, 'shift-ipv', 'canView') && (
+            <ShiftIpvPage
+              user={user}
+              config={config}
+              onRefreshBadges={refreshBadges}
+              notify={notify}
+            />
           )}
-          {activePage === 'pricing' && (
-            <PricingMfpPage user={user} onRefreshBadges={refreshBadges} notify={notify} />
+          {activePage === 'warehouse' && canUserAccess(user, config, 'warehouse', 'canView') && (
+            <WarehousePage
+              user={user}
+              config={config}
+              activeCompany={activeCompany}
+              onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
+              onRefreshBadges={refreshBadges}
+              notify={notify}
+            />
           )}
-          {activePage === 'banking' && (
-            <FinanceDashboard onRefreshBadges={refreshBadges} notify={notify} />
+          {activePage === 'pricing' && canUserAccess(user, config, 'pricing', 'canView') && (
+            <PricingMfpPage
+              user={user}
+              config={config}
+              activeCompany={activeCompany}
+              onPreviewCatalog={(code) => openCatalogPreview(code, 'workspace', true)}
+              onRefreshBadges={refreshBadges}
+              notify={notify}
+            />
           )}
-          {activePage === 'onat' && (
-            <OnatTaxesPage onRefreshBadges={refreshBadges} notify={notify} />
+          {activePage === 'banking' && canUserAccess(user, config, 'banking', 'canView') && (
+            <FinanceDashboard user={user} config={config} onRefreshBadges={refreshBadges} notify={notify} />
           )}
-          {activePage === 'payroll' && (
-            <PayrollPage onRefreshBadges={refreshBadges} notify={notify} />
+          {activePage === 'onat' && canUserAccess(user, config, 'onat', 'canView') && (
+            <OnatTaxesPage user={user} config={config} onRefreshBadges={refreshBadges} notify={notify} />
           )}
-          {activePage === 'accounting' && <AccountingNcifPage notify={notify} />}
-          {activePage === 'compliance' && (
+          {activePage === 'payroll' && canUserAccess(user, config, 'payroll', 'canView') && (
+            <PayrollPage user={user} config={config} onRefreshBadges={refreshBadges} notify={notify} />
+          )}
+          {activePage === 'accounting' && canUserAccess(user, config, 'accounting', 'canView') && (
+            <AccountingNcifPage notify={notify} />
+          )}
+          {activePage === 'compliance' && canUserAccess(user, config, 'compliance', 'canView') && (
             <CompliancePage
               user={user}
+              config={config}
               onConfigUpdated={setConfig}
               onRefreshBadges={refreshBadges}
               notify={notify}

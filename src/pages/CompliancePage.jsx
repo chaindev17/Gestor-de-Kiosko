@@ -10,16 +10,17 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { ROLE_META, formatCup, formatDateTime } from '../lib/format.js';
+import { canUserAccess } from '../lib/permissions.js';
 
-export default function CompliancePage({ user, onConfigUpdated, onRefreshBadges, notify }) {
+export default function CompliancePage({ user, config: appConfig, onConfigUpdated, onRefreshBadges, notify }) {
   const [data, setData] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [tab, setTab] = useState('inspector');
   const [cfgForm, setCfgForm] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const canConfigure = user.role === 'jefe' || user.role === 'economico';
-  const isJefe = user.role === 'jefe';
+  const canConfigure = !user || canUserAccess(user, appConfig, 'compliance', 'canEdit');
+  const isJefe = user?.role === 'jefe';
 
   const load = useCallback(async () => {
     try {

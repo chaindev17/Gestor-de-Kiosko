@@ -24,10 +24,12 @@ export const DEFAULT_MODULES = {
 
 export const DEFAULT_PERMISSIONS = {
   vendedor_manage_orders: true,
+  vendedor_view_stock: true,
   vendedor_request_restock: true,
   vendedor_view_pricelist: true,
   vendedor_open_shift: true,
   almacenero_create_products: true,
+  almacenero_edit_prices: false,
   almacenero_view_pricelist: true,
   almacenero_view_compliance: true,
   economico_edit_prices_directly: true,
@@ -256,6 +258,15 @@ export function migrateTenantSchema(db) {
   );
 
   ensureColumn(db, 'users', 'email', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'users', 'permissions_json', "TEXT NOT NULL DEFAULT '{}'");
+
+  // Operational mode & Cuban internal reference exchange rates (for private cost/margin calculation)
+  ensureColumn(db, 'business_config', 'operation_mode', "TEXT NOT NULL DEFAULT 'CONTROL_ESTRICTO'");
+  ensureColumn(db, 'business_config', 'strict_ipv_control', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'business_config', 'rate_usd_cup', 'REAL NOT NULL DEFAULT 320');
+  ensureColumn(db, 'business_config', 'rate_mlc_cup', 'REAL NOT NULL DEFAULT 270');
+  ensureColumn(db, 'business_config', 'rate_eur_cup', 'REAL NOT NULL DEFAULT 345');
+  ensureColumn(db, 'business_config', 'show_fx_reference', 'INTEGER NOT NULL DEFAULT 1');
 
   // Public customer catalog & WhatsApp ordering columns
   ensureColumn(db, 'business_config', 'catalog_enabled', 'INTEGER NOT NULL DEFAULT 1');
@@ -276,16 +287,28 @@ export function migrateTenantSchema(db) {
   ensureColumn(db, 'business_config', 'catalog_delivery_fee_cup', 'REAL NOT NULL DEFAULT 150');
   ensureColumn(db, 'business_config', 'catalog_free_delivery_from_cup', 'REAL NOT NULL DEFAULT 3000');
   ensureColumn(db, 'business_config', 'catalog_min_order_cup', 'REAL NOT NULL DEFAULT 0');
-  ensureColumn(db, 'business_config', 'catalog_show_out_of_stock', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'business_config', 'catalog_show_out_of_stock', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'business_config', 'catalog_show_stock_qty', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'business_config', 'catalog_allow_backorder', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'business_config', 'catalog_stock_source', "TEXT NOT NULL DEFAULT 'BOTH'");
 
+  ensureColumn(db, 'products', 'compatibility', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'products', 'catalog_visible', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'products', 'catalog_featured', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'products', 'catalog_description', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'products', 'image_url', "TEXT NOT NULL DEFAULT ''");
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_session_id INTEGER NOT NULL REFERENCES shift_sessions(id) ON DELETE CASCADE,
+      shift_register_id INTEGER NOT NULL REFERENCES shift_registers(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN ('ENTRADA', 'SALIDA')),
+      amount_cup REAL NOT NULL CHECK (amount_cup > 0),
+      reason TEXT NOT NULL,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS customer_orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_code TEXT NOT NULL UNIQUE,

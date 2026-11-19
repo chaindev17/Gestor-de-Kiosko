@@ -162,7 +162,8 @@ router.post('/login', (req, res) => {
 
   const token = signSession({ aid: null, cid: demoCompany?.id || null, uid: user.id });
   setSessionCookie(res, token);
-  const safe = sanitizeUser(user);
+  const cfg = getConfig(db);
+  const safe = sanitizeUser(user, cfg);
   logAudit(db, safe, 'INICIO_SESION', 'Acceso', `Ingreso al sistema como ${safe.role}.`);
 
   return res.json({
@@ -171,7 +172,7 @@ router.post('/login', (req, res) => {
     memberships: [],
     active_company: formatCompanySummary(demoCompany),
     user: safe,
-    config: getConfig(db),
+    config: cfg,
     badges: buildSystemBadges(db, demoCompany?.id, runComplianceAudit),
   });
 });
@@ -225,7 +226,8 @@ router.post('/quick-switch', (req, res) => {
   const keepAccountId = isOwnerPreview || (ctx?.account && targetCompany.is_demo) ? ctx.account.id : null;
   const token = signSession({ aid: keepAccountId, cid: targetCompany.id, uid: user.id });
   setSessionCookie(res, token);
-  const safe = sanitizeUser(user);
+  const cfg = getConfig(db);
+  const safe = sanitizeUser(user, cfg);
 
   return res.json({
     token,
@@ -233,7 +235,7 @@ router.post('/quick-switch', (req, res) => {
     memberships: keepAccountId ? getAccountMemberships(keepAccountId) : [],
     active_company: formatCompanySummary(targetCompany),
     user: safe,
-    config: getConfig(db),
+    config: cfg,
     badges: buildSystemBadges(db, targetCompany.id, runComplianceAudit),
   });
 });

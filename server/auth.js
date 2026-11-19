@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, runWithDb } from './db.js';
+import { getDb, hydrateConfigGovernance, runWithDb } from './db.js';
 import {
   getCompanyById,
   getCompanyDb,
@@ -8,6 +8,7 @@ import {
   getPlatformDb,
   sanitizeAccount,
 } from './platform.js';
+import { buildUserPermissions } from '../src/lib/permissions.js';
 
 const TOKEN_SECRET =
   process.env.KIOSKO_SESSION_SECRET ||
@@ -86,9 +87,15 @@ export function extractToken(req) {
   return token || null;
 }
 
-export function sanitizeUser(user) {
+export function sanitizeUser(user, config = null) {
   if (!user) return null;
   const { password_hash: _pw, ...safe } = user;
+  if (config) {
+    return {
+      ...safe,
+      permissions_matrix: buildUserPermissions(safe, config),
+    };
+  }
   return safe;
 }
 
@@ -102,7 +109,14 @@ export function loadTenantUser(db, userId) {
        WHERE u.id = ? AND u.active = 1`
     )
     .get(Number(userId));
-  return sanitizeUser(user);
+  const safe = sanitizeUser(user);
+  if (!safe) return null;
+  const rawCfg = db.prepare('SELECT * FROM business_config WHERE id = 1').get();
+  const cfg = hydrateConfigGovernance(rawCfg);
+  return {
+    ...safe,
+    permissions_matrix: buildUserPermissions(safe, cfg),
+  };
 }
 
 export function resolveSessionContext(req) {
@@ -193,7 +207,26 @@ export function requireRole(...allowedRoles) {
   };
 }
 
+export function requirePermission(menuId, level = 'canView') {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'No autenticado.' });
+    }
+    if (req.user.role === 'jefe') return next();
+    const matrix = req.user.permissions_matrix;
+    if (!matrix?.items?.[menuId]?.[level]) {
+      return res.status(403).json({
+        error: `Acceso restringido: su usuario no tiene permiso (${level}) en este módulo. Solicite autorización al Jefe del Negocio.`,
+      });
+    }
+    next();
+  };
+}
+
 export function buildSystemBadges(db, companyId, runComplianceAuditFn) {
+  const pendingPrices = db
+    .prepare(`SELECT COUNT(*) AS cnt FROM price_change_requests WHERE status = 'PENDIENTE_JEFE'`)
+    .get().cnt;
   const pendingRestocks = db
     .prepare(`SELECT COUNT(*) AS cnt FROM restock_requests WHERE status = 'PENDIENTE'`)
     .get().cnt;
@@ -239,6 +272,7 @@ export function buildSystemBadges(db, companyId, runComplianceAuditFn) {
     unvalidated_shifts: Number(unvalidatedShifts || 0),
     pending_orders: Number(pendingOrders || 0),
     new_orders: Number(newOrders || 0),
+    pending_prices: Number(pendingPrices || 0),
     pending_affiliations: Number(pendingAffiliations || 0),
     active_shift: activeShift || null,
     compliance_score: compliance.score,

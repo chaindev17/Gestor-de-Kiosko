@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Banknote,
+  Check,
   CheckCircle2,
+  Copy,
+  Globe,
   Minus,
   PackagePlus,
   Plus,
@@ -14,6 +17,8 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { formatCup, formatDateTime, formatNumber } from '../lib/format.js';
+import { buildCatalogUrl, buildWhatsappUrl } from '../lib/whatsapp.js';
+import QrCodeBadge from '../components/QrCodeBadge.jsx';
 import Modal from '../components/Modal.jsx';
 
 function MerchantQrBadge({ code, amount }) {
@@ -58,7 +63,16 @@ function MerchantQrBadge({ code, amount }) {
   );
 }
 
-export default function PosPage({ user, badges = {}, onNavigate, onRefreshBadges, notify }) {
+export default function PosPage({
+  user,
+  config,
+  activeCompany,
+  badges = {},
+  onNavigate,
+  onPreviewCatalog,
+  onRefreshBadges,
+  notify,
+}) {
   const [products, setProducts] = useState([]);
   const [shiftBundle, setShiftBundle] = useState(null);
   const [payConfig, setPayConfig] = useState(null);
@@ -107,9 +121,16 @@ export default function PosPage({ user, badges = {}, onNavigate, onRefreshBadges
     return products.filter((p) => {
       if (category !== 'TODAS' && p.category !== category) return false;
       if (!q) return true;
-      return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.sku.toLowerCase().includes(q) ||
+        (p.compatibility || '').toLowerCase().includes(q) ||
+        (p.catalog_description || '').toLowerCase().includes(q)
+      );
     });
   }, [products, category, search]);
+  const [catalogQrOpen, setCatalogQrOpen] = useState(false);
+  const [copiedCat, setCopiedCat] = useState(false);
 
   const myRegister = useMemo(() => {
     if (!shiftBundle?.registers) return null;
@@ -305,15 +326,26 @@ export default function PosPage({ user, badges = {}, onNavigate, onRefreshBadges
         {/* Catalog */}
         <section className="lg:col-span-7 space-y-3">
           <div className="card p-3 space-y-2.5">
-            <div className="relative">
-              <Search className="h-4 w-4 text-[#7B8491] absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                className="input-field pl-9"
-                placeholder="Buscar producto por nombre o código SKU..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="h-4 w-4 text-[#7B8491] absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  className="input-field pl-9"
+                  placeholder="Buscar por nombre, código SKU o compatibilidad..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setCatalogQrOpen(true)}
+                title="Mostrar QR o copiar enlace del Catálogo público para el cliente"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-[#E6F5EF] hover:bg-[#D5EEE4] text-[#15614B] px-3 py-2 text-xs font-bold shrink-0 cursor-pointer"
+              >
+                <QrCode className="h-4 w-4" />
+                <span className="hidden sm:inline">QR Catálogo</span>
+              </button>
             </div>
             <div className="flex flex-wrap gap-1.5">
               {categories.map((cat) => (
@@ -347,11 +379,20 @@ export default function PosPage({ user, badges = {}, onNavigate, onRefreshBadges
                       : 'hover:border-[#0F5C4D] hover:shadow-xs cursor-pointer'
                   } ${inCart ? 'ring-2 ring-[#0F5C4D]/35 border-[#0F5C4D]' : ''}`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
+                  <div className="flex items-start justify-between gap-2.5">
+                    {p.image_url && (
+                      <img
+                        src={p.image_url}
+                        alt={p.name}
+                        loading="lazy"
+                        className="h-12 w-12 shrink-0 rounded-lg object-cover border border-[#E5E1D7] bg-[#FAF8F4]"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-[#171C22] leading-snug">{p.name}</p>
-                      <p className="text-[11px] text-[#6F7885] mt-0.5">
-                        {p.sku} · Unidad: {p.unit}
+                      <p className="text-[11px] text-[#6F7885] mt-0.5 truncate">
+                        {p.sku} · {p.unit}
+                        {p.compatibility ? ` · ${p.compatibility}` : ''}
                       </p>
                     </div>
                     {p.is_price_capped ? (
@@ -744,6 +785,69 @@ export default function PosPage({ user, badges = {}, onNavigate, onRefreshBadges
             </div>
           </div>
         )}
+      </Modal>
+      {/* Modal: QR y Enlace del Catálogo Público para compartir al cliente desde el Mostrador */}
+      <Modal
+        open={catalogQrOpen}
+        onClose={() => setCatalogQrOpen(false)}
+        title="Catálogo Público para el Cliente"
+        subtitle="El cliente escanea el QR o recibe el enlace por WhatsApp con fotos, precios en CUP y disponibilidad"
+      >
+        {(() => {
+          const catCode =
+            activeCompany?.company_code || config?.company_code || 'kiosko-CEIBA1';
+          const catUrl = buildCatalogUrl(catCode);
+          const waShare = buildWhatsappUrl(
+            '',
+            `¡Hola! Consulta nuestro catálogo actualizado de *${payConfig?.business_name || config?.business_name || 'nuestro comercio'}* aquí:\n${catUrl}`
+          );
+          return (
+            <div className="text-center space-y-4 py-1 text-xs">
+              <div className="inline-flex p-4 rounded-2xl bg-[#FAF8F4] border border-[#E5DED0]">
+                <QrCodeBadge value={catUrl} size={180} />
+              </div>
+              <p className="font-mono text-[11px] text-[#4C5561] bg-[#FAF8F4] rounded-lg px-3 py-2 break-all">
+                {catUrl}
+              </p>
+              <div className="flex flex-wrap justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(catUrl);
+                    setCopiedCat(true);
+                    notify('Enlace del catálogo copiado.');
+                    setTimeout(() => setCopiedCat(false), 2000);
+                  }}
+                  className="btn-primary text-xs"
+                >
+                  {copiedCat ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedCat ? 'Copiado' : 'Copiar enlace'}
+                </button>
+                <a
+                  href={waShare}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-secondary text-xs"
+                >
+                  <Globe className="h-3.5 w-3.5 text-emerald-700" />
+                  Enviar por WhatsApp
+                </a>
+                {onPreviewCatalog && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCatalogQrOpen(false);
+                      onPreviewCatalog(catCode);
+                    }}
+                    className="btn-secondary text-xs"
+                  >
+                    Ver como cliente
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

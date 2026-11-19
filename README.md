@@ -2,24 +2,31 @@
 
 Plataforma web integral de gestión automatizada para kioskos y comercios minoristas — con experiencia editorial inspirada en **Conecta** (`conecta.simplemente.com.uy`), **registro por correo electrónico**, **creación de empresas aisladas**, **afiliación por código (`kiosko-XXXXXX`)** y **control total del creador sobre cómo se maneja el software**.
 
-## Novedades principales
+## Arquitectura completa del sistema (13 módulos + afiliación)
 
-- **Catálogo público con pedido directo a tu WhatsApp (`?tienda=kiosko-XXXXXX`)**:
-  - Cada empresa cuenta con su link público y cartel QR imprimible para mostrador o redes sociales.
-  - Tus clientes entran sin registrarse, filtran por categorías o destacados, arman su carrito, eligen **retiro en local** o **envío a domicilio** (con cálculo automático de envío gratis), indican cómo pagan (efectivo con cálculo exacto de vuelto o QR con bonificación) y envían el pedido perfectamente redactado directo a tu **WhatsApp**.
-  - En tu panel **Catálogo WhatsApp** respondes al cliente en 1 clic, cambias el estado (*Nuevo → Preparando → Listo → Entregado*) y cobras descontando inventario y generando asiento contable con un solo toque.
-- **Interfaz extremadamente intuitiva y adaptable al celular**:
-  - Pantalla de inicio con accesos directos claros (*Cobrar venta*, *Catálogo WhatsApp*, *Productos y stock*, *Equipo y código*), navegación agrupada en lenguaje cotidiano, barra inferior táctil para celulares y alta rápida de productos en segundos.
-- **Cuentas con correo electrónico**: registro, inicio de sesión, recuperación de contraseña y panel multi-empresa (*Tus Empresas*), permitiendo a una misma persona ser creadora de su negocio y/o afiliada a otros comercios.
-- **Crear tu propia empresa en 3 pasos**: cada empresa recibe su propia base de datos aislada y un código único (`kiosko-XXXXXX`) con tarjeta QR imprimible, enlace directo (`?codigo=kiosko-XXXXXX`) y botón para compartir por WhatsApp.
-- **Afiliarse a una empresa existente**: los trabajadores ingresan el código `kiosko-XXXXXX`, verifican el comercio en vivo y solicitan afiliación (para que el creador apruebe y asigne puesto, turno, caja y salario) o ingresan al instante con un código de invitación directa por rol/correo.
-- **El creador decide cómo se maneja el software** (en el asistente inicial y en cualquier momento desde *Mi Empresa y Modo*):
-  - **4 modos de gestión**: *Mostrador Ágil (Dueño en Caja)*, *Equipo Compacto*, *Kiosko Integral (2 Cajas por Turno)* y *A tu Medida*.
-  - **Módulos activables/desactivables**: Punto de Venta (POS), Turnos e IPV, Almacén y Mermas, Precios y Fichas MFP, Bancarización y QR, Tributos ONAT, Nómina Ley 116, Contabilidad NCIF y Carpeta de Inspección.
-  - **Estructura y reglas a medida**: de 1 a 6 cajas simultáneas por turno, turno único/doble/24h, dueño operando POS, cupos de puestos estrictos o flexibles, carné de identidad obligatorio u opcional, y automatizaciones/topes legales activables.
-  - **Permisos granulares por rol**: decide exactamente qué pueden hacer vendedores, almaceneros y económicos.
-- **Automatización comercial, tributaria y contable completa**: POS en CUP con cobro en efectivo, Transfermóvil, EnZona y Mixto; IPV en vivo; modelos SC-2-04, SC-2-09, SC-2-14 y SC-2-16; fichas de costo Res. 225/2024 MFP y tablilla Decreto 30/2021; Bancarización Res. 111/2023 BCC; tributos ONAT Ley 113 (MIPYME DL 88/2024 y TCP DL 90/2024); Nómina Ley 116; y contabilidad NCIF de partida doble automática.
-- **Doble modo de ejecución**: servidor full-stack (`Express` + `node:sqlite`) o modo estático 100 % funcional en **GitHub Pages** con persistencia multi-empresa en el navegador.
+El menú del negocio se organiza en orden exacto y filtra dinámicamente cada elemento según los permisos reales del usuario conectado:
+
+1. **Inicio del Negocio** — Resumen diario en CUP (Efectivo, Transfermóvil QR, EnZona QR), cajas abiertas/cerradas, alertas de stock/mermas/precios pendientes y bitácora de acciones por usuario.
+2. **Mi Empresa y Modo** — Modo de operación (*Solo POS*, *POS + Catálogo*, *Solo Catálogo*, *Multicaja*), moneda oficial **CUP** con tasas referenciales internas (**USD / MLC / EUR**), datos de cobro QR, políticas de catálogo/IPV y activación de módulos.
+3. **Equipo y Turnos** — Gestión de plantilla, turnos y **Matriz granular de permisos por trabajador** (`canView`, `canEdit`, `canApprove` en los 13 módulos + 7 permisos especiales de privacidad/operación), con protección real de rutas y API.
+4. **Mostrador (POS)** — Venta rápida por nombre, código o compatibilidad con miniaturas de foto, cobro en Efectivo CUP, Transfermóvil, EnZona o Mixto, descuento en tiempo real de stock e IPV y botón **QR Catálogo** para clientes.
+5. **Turnos, Cajas e IPV** — Apertura con fondo inicial, **entradas y salidas de efectivo en caja** con motivo, arqueo de cierre (efectivo esperado vs. contado + diferencia) e IPV exacto (*Inicial + Entradas − Ventas − Mermas − Devoluciones = Final*).
+6. **Almacén y Stock** — Doble nivel de entrada (*Producto existente SC-2-04* y *Nuevo producto + foto + entrada en 1 paso* con destino Almacén, Mostrador o Mixto), compresor de fotos en navegador (**WebP/JPEG ≤ 800×800 px** desde cámara, galería o recorte cuadrado), pases SC-2-09, kardex y mermas SC-2-16 con aprobación del Jefe.
+7. **Precios y Tablilla** — Fichas de costo MFP Res. 225/2024, equivalencias referenciales USD/MLC/EUR, aprobación/rechazo en 1 clic de precios propuestos desde Almacén, Tablilla Oficial Decreto 30/2021 (modo seguro sin costos para dependientes), interruptor de visibilidad en catálogo e historial completo de cambios.
+8. **Catálogo y Pedidos** — Ubicado justo debajo de *Precios y Tablilla*: sincronización automática con stock, foto, compatibilidad y precio público (`Disponible` / `Agotado` al llegar a 0, sin exponer jamás costos ni proveedores), buscador público (`?tienda=kiosko-XXXXXX`), pedido directo a WhatsApp y cobro en 1 clic.
+9. **Cobros QR y Banco** — Conciliación Transfermóvil/EnZona, órdenes de depósito BCC Res. 111/2023 y gastos bancarizados.
+10. **Tributos ONAT** — Liquidación Ley 113 (MIPYME DL 88/2024 y TCP DL 90/2024).
+11. **Nómina y Comisiones** — Cálculo Ley 116, comisiones por ventas, retenciones y aportes.
+12. **Contabilidad NCIF** — Diario, Mayor, Comprobación y Estado de Resultados de partida doble automática.
+13. **Leyes e Inspección** — Auditoría preventiva y carpeta oficial de inspección.
+- **Mis empresas / Afiliarme** (`kiosko-XXXXXX` con QR e invitaciones) y **Cerrar sesión**.
+
+### Privacidad estricta por rol y trabajador
+- **Jefe del Negocio**: acceso total, edición/aprobación global, costos, márgenes, auditoría y configuración de permisos por empleado.
+- **Almacenero**: alta y entrada de mercancía, fotos, compatibilidad, pases y reporte de mermas; ve costo de entrada pero **no** valorización ni márgenes globales, y sus cambios de precio quedan como propuesta pendiente de aprobación del Jefe (salvo permiso explícito).
+- **Dependiente / Cajero POS**: vende en mostrador, gestiona su caja/IPV y consulta stock/tablilla con foto y compatibilidad, **sin ver jamás costos de compra, márgenes ni proveedores**.
+- **Catálogo público de clientes**: muestra solo foto, nombre, código, categoría, compatibilidad, precio público en CUP y disponibilidad.
+- **Doble modo de ejecución**: servidor full-stack (`Express` + `node:sqlite`) o modo estático 100 % funcional en **GitHub Pages** con paridad completa y persistencia multi-empresa en el navegador.
 
 ## Demo interactiva incluida
 
@@ -38,7 +45,7 @@ Puedes probar la empresa demostrativa **Kiosko La Ceiba S.U.R.L.** desde la port
 ```bash
 npm install
 npm run dev       # Servidor Express + SQLite + Vite en http://0.0.0.0:3000
-npm test          # Suite automatizada de pruebas (9 escenarios E2E)
+npm test          # Suite automatizada de pruebas (14 escenarios E2E)
 npm run build     # Compilación de producción en ./dist (lista para GitHub Pages)
 npm start         # Servidor en producción sirviendo ./dist
 ```

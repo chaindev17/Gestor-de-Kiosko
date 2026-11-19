@@ -10,10 +10,12 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { formatCup, formatDate } from '../lib/format.js';
+import { canUserAccess } from '../lib/permissions.js';
 import StatCard from '../components/StatCard.jsx';
 import Modal from '../components/Modal.jsx';
 
-export default function FinanceDashboard({ onRefreshBadges, notify }) {
+export default function FinanceDashboard({ user, config: appConfig, onRefreshBadges, notify }) {
+  const canEdit = !user || canUserAccess(user, appConfig, 'banking', 'canEdit');
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -145,16 +147,22 @@ export default function FinanceDashboard({ onRefreshBadges, notify }) {
             Resolución 111/2023 del Banco Central de Cuba · Cuenta Bancaria Fiscal {config.fiscal_account_cup} ({config.bank_name})
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setDepModal(true)} className="btn-secondary text-xs">
-            <ArrowDownToLine className="h-3.5 w-3.5" />
-            Depósito bancario
-          </button>
-          <button type="button" onClick={() => setExpModal(true)} className="btn-primary text-xs">
-            <Plus className="h-3.5 w-3.5" />
-            Registrar gasto
-          </button>
-        </div>
+        {canEdit ? (
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setDepModal(true)} className="btn-secondary text-xs">
+              <ArrowDownToLine className="h-3.5 w-3.5" />
+              Depósito bancario
+            </button>
+            <button type="button" onClick={() => setExpModal(true)} className="btn-primary text-xs">
+              <Plus className="h-3.5 w-3.5" />
+              Registrar gasto
+            </button>
+          </div>
+        ) : (
+          <span className="rounded-full bg-[#F3EFE7] px-3 py-1.5 text-[11px] font-semibold text-[#6E685F]">
+            Solo lectura
+          </span>
+        )}
       </div>
 
       {/* Balances */}
@@ -232,7 +240,7 @@ export default function FinanceDashboard({ onRefreshBadges, notify }) {
                     {d.bank_voucher_ref ? ` · Comprobante: ${d.bank_voucher_ref}` : ''}
                   </p>
                 </div>
-                {d.status === 'PENDIENTE' && (
+                {canEdit && d.status === 'PENDIENTE' && (
                   <button
                     type="button"
                     onClick={() => {
@@ -259,7 +267,7 @@ export default function FinanceDashboard({ onRefreshBadges, notify }) {
                 Acredita los cobros QR verificados en el estado de cuenta de la Cuenta Bancaria Fiscal (Cta. 110).
               </p>
             </div>
-            {unreconciled_qr.length > 0 && (
+            {canEdit && unreconciled_qr.length > 0 && (
               <button
                 type="button"
                 disabled={busy}

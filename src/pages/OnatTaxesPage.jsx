@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Calendar, CheckCircle2, Download, Printer, Receipt, Shield } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { downloadCsv, formatCup, formatDate } from '../lib/format.js';
+import { canUserAccess } from '../lib/permissions.js';
 import StatCard from '../components/StatCard.jsx';
 import Modal from '../components/Modal.jsx';
 
-export default function OnatTaxesPage({ onRefreshBadges, notify }) {
+export default function OnatTaxesPage({ user, config, onRefreshBadges, notify }) {
+  const canEdit = !user || canUserAccess(user, config, 'onat', 'canEdit');
   const [period, setPeriod] = useState('');
   const [data, setData] = useState(null);
   const [payModal, setPayModal] = useState(null);
@@ -205,7 +207,7 @@ export default function OnatTaxesPage({ onRefreshBadges, notify }) {
                     )}
                   </td>
                   <td className="px-4 py-3 text-right no-print">
-                    {ob.status !== 'PAGADO' && ob.amount_cup > 0 && (
+                    {canEdit && ob.status !== 'PAGADO' && ob.amount_cup > 0 && (
                       <button
                         type="button"
                         onClick={() => {
